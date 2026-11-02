@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+    <meta name="theme-color" content="#141833" />
+    <meta name="description" content="Slide colored bricks out through their gates. Infinite puzzles, works offline." />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Block Out" />
+    <link rel="icon" href="./icons/favicon-64.png" />
+    <link rel="apple-touch-icon" href="./icons/apple-touch-icon.png" />
+    <title>Block Out</title>
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="Block Out" />
+    <meta property="og:title" content="Block Out" />
+    <meta property="og:description" content="Slide every brick out through its own gate. Infinite puzzles, free, no ads." />
+    <meta property="og:url" content="https://block-out-ekg.pages.dev/" />
+    <meta property="og:image" content="https://block-out-ekg.pages.dev/og.png" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta property="og:image:alt" content="Block Out: colorful toy bricks on a cream tray, sliding toward colored gates" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="Block Out" />
+    <meta name="twitter:description" content="Slide every brick out through its own gate. Infinite puzzles, free, no ads." />
+    <meta name="twitter:image" content="https://block-out-ekg.pages.dev/og.png" />
+    <script type="module" crossorigin src="./assets/index-BmbIWHTm.js"></script>
+    <link rel="stylesheet" crossorigin href="./assets/index-DhXnvTsU.css">
+  <link rel="manifest" href="./manifest.webmanifest"></head>
+  <body>
+    <canvas id="board" aria-label="Puzzle tray"></canvas>
+    <header id="hud" class="hidden">
+      <button id="btn-pause" class="icon raised" aria-label="Pause"><i></i><i></i></button>
+      <div class="hud-mid">
+        <div id="hud-time">1:00</div>
+        <div id="hud-label"></div>
+      </div>
+      <div class="hud-right">
+        <div id="hud-level">Lv 1</div>
+        <div id="hud-moves"></div>
+      </div>
+    </header>
+    <button id="btn-undo" class="icon raised hidden" aria-label="Undo" disabled>↶</button>
+    <p id="hint" class="hidden"></p>
+    <div id="screens"></div>
+    <div id="safe-probe" aria-hidden="true"></div>
+  </body>
+</html>
