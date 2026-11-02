@@ -70,7 +70,8 @@ describe('generated levels', () => {
     expect(levels.some((l) => l.variant === 'U')).toBe(true);
     expect(levels.some((l) => l.variant === 'chambers')).toBe(true);
     const packed = levels.filter((l) => l.variant === 'packed' && !l.fallback);
-    expect(packed.length).toBeGreaterThan(8);
+    expect(packed.length).toBeGreaterThanOrEqual(4);
+    expect(levels.filter((l) => l.variant === 'klotski').length).toBeGreaterThan(levels.length / 2);
     for (const l of packed) {
       // Klotski-style: nearly full, with a few empty cells to shuffle through.
       const empty = l.w * l.h - l.pieces.reduce((a, p) => a + SHAPES[p.shape].cells.length, 0);

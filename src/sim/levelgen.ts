@@ -26,7 +26,7 @@ import {
   type Variant,
 } from './types';
 
-export const GEN_VERSION = 10;
+export const GEN_VERSION = 11;
 
 const cache = new Map<number, { level: Level; witness: Move[] }>();
 
@@ -109,7 +109,7 @@ export function paramsFor(n: number): Params {
   if (milestone) pieces = Math.min(13, pieces + 2);
   const variant = variantFor(n, breather);
   // Every tenth level from 13, then every fifth from 100: some exit that looks free is a mistake.
-  const trap = !breather && !milestone && variant !== 'packed' && variant !== 'checker' && n >= 13 && (n % 10 === 3 || (n >= 100 && n % 10 === 8));
+  const trap = !breather && !milestone && variant !== 'packed' && variant !== 'checker' && variant !== 'klotski' && n >= 13 && (n % 10 === 3 || (n >= 100 && n % 10 === 8));
   // One color for the first two levels, then a new color roughly every six levels, up to all six.
   let colors = variant === 'checker' ? 2 : t <= 2 ? 1 : clamp(2 + Math.floor((t - 3) / 6), 2, COLORS.length);
   colors = Math.min(colors, pieces);
@@ -138,13 +138,15 @@ export function paramsFor(n: number): Params {
 }
 
 function variantFor(n: number, breather: boolean): Variant {
+  if (n <= 3) return 'rect';
   if (n >= 25 && n % 25 === 0) return 'rect';
-  if (n >= 9 && n % 10 === 9) return 'checker';
-  // Packed: every brick starts on the board with no empty cells.
-  if (n >= 7 && n % 10 === 7) return 'packed';
-  // Narrow trays (U, stacked chambers) measure deepest, so they come up three times in ten.
-  if (!breather && n >= 8 && (n % 10 === 2 || n % 10 === 8)) return 'U';
-  if (!breather && n >= 14 && n % 10 === 4) return 'chambers';
+  if (breather) return 'rect';
+  const r = n % 10;
+  // Klotski trays are most of the game: six levels in ten.
+  if (r === 0 || r === 1 || r === 2 || r === 4 || r === 6 || r === 8) return 'klotski';
+  // 3 is the trap level (rect). 7 alternates U and packed; 9 alternates chambers and checker.
+  if (r === 7) return n % 20 === 7 ? 'packed' : 'U';
+  if (r === 9) return n % 20 === 9 ? 'checker' : 'chambers';
   return 'rect';
 }
 
@@ -186,9 +188,9 @@ function build(n: number, override?: Partial<Params>): { level: Level; witness: 
   const pool: { draft: Draft; quick: SolveResult; score: number }[] = [];
   const fail = { build: 0, witness: 0, solve: 0, timer: 0 };
   // More candidates later in the campaign, so the hardest pick keeps getting harder.
-  const attempts = params.breather ? 6 : params.milestone || params.trap ? 16 : params.variant === 'packed' ? 12 : Math.min(16, 10 + Math.floor(tierOf(n) / 100));
+  const attempts = params.breather ? 6 : params.milestone || params.trap || params.variant === 'klotski' ? 16 : params.variant === 'packed' ? 12 : Math.min(16, 10 + Math.floor(tierOf(n) / 100));
   for (let attempt = 0; attempt < attempts; attempt++) {
-    const draft = params.variant === 'packed' ? tryPacked(n, params, rng, attempt >= attempts / 2) : tryBuild(n, params, rng);
+    const draft = params.variant === 'packed' ? tryPacked(n, params, rng, attempt >= attempts / 2) : params.variant === 'klotski' ? tryKlotski(n, params, rng) : tryBuild(n, params, rng);
     if (!draft) { fail.build++; continue; }
     if (!replay(draft.level, draft.witness)) { fail.witness++; continue; }
     const quick = quickSolve(draft.level, params);
@@ -207,7 +209,7 @@ function build(n: number, override?: Partial<Params>): { level: Level; witness: 
   if (!pool.length) {
     if (typeof process !== 'undefined' && process.env?.GEN_DEBUG) console.log('fallback', n, fail, params);
     // A packed tray that will not come together becomes a normal tray, not a trivial one.
-    if (params.variant === 'packed') return build(n, { variant: 'rect', oneWay: 0.4, limitGates: true, paint: 1 });
+    if (params.variant === 'packed' || params.variant === 'klotski') return build(n, { variant: 'rect', oneWay: 0.4, limitGates: true, paint: 1 });
     return fallback(n, params);
   }
   // The beam ranks every candidate; the exact solver re-measures the top three and picks.
@@ -217,7 +219,7 @@ function build(n: number, override?: Partial<Params>): { level: Level; witness: 
   // Full trays have huge position counts: re-measure only the top one.
   const packed = params.variant === 'packed';
   // Hardest-start search: off for the first levels and warmups, which should read at a glance.
-  const reselect = n <= 3 ? 0 : params.breather ? 2 : packed ? 8 : 4;
+  const reselect = n <= 3 ? 0 : params.breather ? 2 : packed || params.variant === 'klotski' ? 8 : 4;
   for (const { draft, quick } of pool.slice(0, 3)) {
     // The tray as built, plus the hardest starts its bricks can slide into.
     const starts = reselect ? hardStarts(draft.level, 2500, reselect) : [];
@@ -357,7 +359,7 @@ function polish(start: Level, startSolved: SolveResult, startScore: number, para
   // Klotski filler: a small brick dropped in an empty cell, kept only if the solution now
   // has to shove more bricks aside. Every brick still needs a gate it fits.
   // Not in packed trays: their few empty cells are what the bricks shuffle through.
-  if (params.variant !== 'checker' && params.variant !== 'packed') {
+  if (params.variant !== 'checker' && params.variant !== 'packed' && params.variant !== 'klotski') {
     const smalls = SHAPES.map((sh, id) => ({ sh, id })).filter(({ sh }) => sh.cells.length <= 2);
     for (let t = 0; t < 6 && cur.pieces.length < 15; t++) {
       const { sh, id } = rng.pick(smalls);
@@ -454,6 +456,11 @@ function countTraps(level: Level, lines: readonly (readonly Move[])[]): number {
 
 /** Beam search for ranking; a tray the beam cannot clear is dropped and the next attempt runs. */
 function quickSolve(level: Level, params: Params): SolveResult | null {
+  // Klotski solutions run long; the beam's depth cap would drop them, so search exactly.
+  if (params.variant === 'klotski') {
+    const exact = solve(level, params.nodes, Infinity);
+    return exact.solved && replay(level, exact.moves) ? exact : null;
+  }
   const deep = params.milestone || params.paint >= 2 || params.variant === 'packed';
   const beam = beamSolve(level, deep ? 48 : 36, deep ? 11 : 7);
   return beam?.solved && replay(level, beam.moves) ? beam : null;
@@ -531,6 +538,7 @@ function present(level: Level, params: Params, label: Label): { hint: string; me
   if (level.gates.some((g) => g.uses)) mechanics.push('limited-gate');
   if (level.paint?.length) mechanics.push('paint');
   if (level.variant === 'packed') mechanics.push('packed');
+  if (level.variant === 'klotski') mechanics.push('klotski');
   for (let i = 0; i < level.floor.length; i++) {
     const x = i % level.w;
     const y = Math.floor(i / level.w);
@@ -539,6 +547,7 @@ function present(level: Level, params: Params, label: Label): { hint: string; me
   let hint = 'Drag a brick out through the gate of its color. It has to fit the opening.';
   if (label === 'Milestone') hint = 'Milestone tray. Bigger and tougher than the levels around it.';
   else if (label === 'Trap') hint = 'Trap tray. An exit that looks free can use up a gate another brick needs.';
+  else if (level.variant === 'klotski') hint = 'Klotski tray. One gate per color and almost no room: shuffle bricks to let each one through.';
   else if (level.variant === 'packed') hint = 'A tight tray with a few empty cells. Shuffle bricks aside to open a path.';
   else if (level.paint?.length) hint = 'A brick that stops on a paint tile turns that color. Two different paints cancel out.';
   else if (mechanics.includes('limited-gate')) hint = 'A gate with dots closes after that many bricks pass through.';
@@ -1200,6 +1209,90 @@ function tryPacked(n: number, params: Params, rng: Rng, smaller = false): Draft 
   const solved = beamSolve(level, 48, 11);
   if (!solved?.solved) return null;
   return { level, witness: solved.moves };
+}
+
+/**
+ * Klotski tray. Tile a small board with mostly 2-4 cell bricks, lift out bricks until two
+ * or three cells are empty, then give each color a single gate wide enough for all its
+ * bricks. Sharing one exit per color is what makes bricks travel and step around each
+ * other. The exact solver's line is the witness; the usual mechanics are layered on top.
+ */
+function tryKlotski(n: number, params: Params, rng: Rng): Draft | null {
+  // Bigger trays from level 100, so the late game has more to shuffle.
+  const sizes: [number, number][] = tierOf(n) >= 300 ? [[6, 6], [6, 7]] : [[5, 6], [6, 6]];
+  const [w, h] = rng.pick(sizes);
+  const floor = new Uint8Array(w * h).fill(1);
+  const level: Level = {
+    n, w, h, floor, gates: [], pieces: [], rooms: [], timer: 60, label: 'Normal',
+    variant: 'klotski', hint: '', mechanics: [], metrics: emptyMetrics(), fallback: false,
+  };
+  // Bigger bricks: two to four cells, no 3x3 blobs, so the tray holds about eight to ten.
+  const pool = shapePool(tierOf(n), 'rect', Math.max(w, h)).filter((id) => {
+    const sh = SHAPES[id];
+    return sh.cells.length >= 2 && sh.cells.length <= 4 && sh.w <= 3 && sh.h <= 3;
+  });
+  const grid = new Int16Array(w * h).fill(-1);
+  for (let c = 0; c < w * h; c++) {
+    if (grid[c] >= 0) continue;
+    const cx = c % w;
+    const cy = Math.floor(c / w);
+    let placed = false;
+    for (let t = 0; t < 12 && !placed; t++) {
+      const id = t < 11 ? rng.pick(pool) : DOT;
+      const sh = SHAPES[id];
+      const ox = cx - sh.cells[0][0];
+      const oy = cy - sh.cells[0][1];
+      if (ox < 0 || oy < 0 || ox + sh.w > w || oy + sh.h > h) continue;
+      if (!sh.cells.every(([dx, dy]) => grid[(oy + dy) * w + ox + dx] < 0)) continue;
+      const idx = level.pieces.length;
+      for (const [dx, dy] of sh.cells) grid[(oy + dy) * w + ox + dx] = idx;
+      level.pieces.push({ shape: id, color: 0, x: ox, y: oy, ice: 0, lock: 0, keys: 0, room: -1 });
+      placed = true;
+    }
+    if (!placed) return null;
+  }
+  // Two or three empty cells: lift out the smallest bricks first.
+  const holes = 2 + rng.int(0, 2);
+  // Shuffle, then a stable sort by size: random among equals, same order on every engine.
+  const bySize = rng.shuffle(level.pieces.map((p, i) => ({ i, size: SHAPES[p.shape].cells.length }))).sort((a, b) => a.size - b.size);
+  let free = 0;
+  const drop = new Set<number>();
+  for (const { i, size } of bySize) {
+    if (free >= holes) break;
+    if (free + size > holes + 1) continue;
+    drop.add(i);
+    free += size;
+  }
+  if (free < 2) return null;
+  level.pieces = level.pieces.filter((_, i) => !drop.has(i));
+  if (level.pieces.length < 6) return null;
+  // Two or three colors, one gate each.
+  const colorCount = Math.min(params.colors, 2 + rng.int(0, 2));
+  const colors = rng.shuffle(Array.from({ length: COLORS.length }, (_, c) => c)).slice(0, colorCount);
+  for (const p of level.pieces) p.color = rng.pick(colors);
+  for (const c of colors) {
+    const mine = level.pieces.filter((p) => p.color === c);
+    if (!mine.length) continue;
+    let made = false;
+    for (const dir of rng.shuffle([0, 1, 2, 3] as Dir[])) {
+      const vertical = dir === 0 || dir === 2;
+      const span = Math.max(...mine.map((p) => (vertical ? SHAPES[p.shape].w : SHAPES[p.shape].h)));
+      const limit = (vertical ? w : h) - span;
+      for (const along of rng.shuffle(Array.from({ length: limit + 1 }, (_, a) => a))) {
+        if (level.gates.some((g) => g.dir === dir && along < g.along + g.span && g.along < along + span)) continue;
+        level.gates.push({ dir, along, span, color: c, ice: 0 });
+        made = true;
+        break;
+      }
+      if (made) break;
+    }
+    if (!made) return null;
+  }
+  const solved = solve(level, params.nodes, Infinity);
+  if (!solved.solved || !replay(level, solved.moves)) return null;
+  const witness = solved.moves;
+  decorate(level, witness, rng, params);
+  return replay(level, witness) ? { level, witness } : null;
 }
 
 /** One locked brick, needing exactly the keys that have already left when it first moves. */

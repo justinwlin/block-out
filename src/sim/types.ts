@@ -6,7 +6,7 @@ export const DX = [0, 1, 0, -1] as const;
 export const DY = [-1, 0, 1, 0] as const;
 
 export type Label = 'Warmup' | 'Normal' | 'Hard' | 'Super Hard' | 'Milestone' | 'Trap';
-export type Variant = 'rect' | 'U' | 'chambers' | 'checker' | 'packed';
+export type Variant = 'rect' | 'U' | 'chambers' | 'checker' | 'packed' | 'klotski';
 
 export interface Shape {
   name: string;
