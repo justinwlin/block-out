@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { destroyColor, destroyPiece } from '../src/sim/boosters';
-import { applyMove, legalMoves, makeState, replay, won } from '../src/sim/rules';
+import { applyMove, legalMoves, makeState, replay, stranded, won } from '../src/sim/rules';
 import { solve } from '../src/sim/solver';
 import { DOT } from '../src/sim/shapes';
 import type { Level, PieceDef } from '../src/sim/types';
@@ -171,6 +171,24 @@ describe('one-way bricks, gate limits, paint', () => {
     expect(legalMoves(level, s).some((m) => m.i === 1 && m.exit)).toBe(false);
     applyMove(level, s, { i: 1, dir: 2, dist: 2, exit: false });
     expect(legalMoves(level, s).some((m) => m.i === 1 && m.exit && m.dir === 3)).toBe(true);
+  });
+
+  it('proves a trap: spending the only gate another brick fits is a dead end', () => {
+    const level = tray({
+      w: 3, h: 2,
+      pieces: [dot(0, 0, 0), dot(2, 0, 0)],
+      gates: [{ dir: 3, along: 0, span: 1, color: 0, ice: 0, uses: 1 }, { dir: 2, along: 0, span: 1, color: 0, ice: 0 }],
+    });
+    // Brick 1 only slides sideways, so the limited left gate is its only way out.
+    level.pieces[1].axis = 1;
+    const s = makeState(level);
+    expect(stranded(level, s)).toBe(false);
+    applyMove(level, s, { i: 0, dir: 3, dist: 1, exit: true });
+    expect(stranded(level, s)).toBe(true);
+    expect(solve(level, 4000, Infinity, s).exhausted).toBe(true);
+    const solved = solve(level);
+    expect(solved.solved).toBe(true);
+    expect(solved.moves.some((m) => m.i === 0 && m.exit && m.dir === 3)).toBe(false);
   });
 
   it('recolors a brick whose slide ends on paint, and the solver uses it', () => {

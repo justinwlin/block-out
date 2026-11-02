@@ -5,7 +5,8 @@ import { registerSW } from 'virtual:pwa-register';
 import { stars, tickClock, winCoins } from './sim/economy';
 import { feedback } from './sim/feel';
 import { generateLevel } from './sim/levelgen';
-import { applyMove, analyze, canMove, makeState, occupancy, pieceActive, settlePaint, won } from './sim/rules';
+import { applyMove, analyze, canMove, makeState, occupancy, pieceActive, settlePaint, stranded, won } from './sim/rules';
+import { solve } from './sim/solver';
 import { SHAPES } from './sim/shapes';
 import { DX, DY, type Dir, type Level, type SimState } from './sim/types';
 import { AudioBus } from './game/audio';
@@ -87,6 +88,8 @@ interface Session {
   frame: Frame;
   hintFor: number;
   gained: number;
+  /** Set when an exit through a limited gate left the tray unsolvable. */
+  stuck: boolean;
 }
 
 const canvas = document.querySelector<HTMLCanvasElement>('#board')!;
@@ -179,6 +182,7 @@ function startLevel(n: number, resume = false) {
     geom: geomFor(1, 1, 1, 1, 0, 0),
     frame: freshFrame(level, live, sim),
     hintFor: 2.6,
+    stuck: false,
     gained: 0,
   };
   session.frame.clears = sim.clears;
@@ -231,6 +235,7 @@ function noteChanges(s: Session, beforeClears: number, beforeKeys: number) {
 function finishExit(s: Session, i: number) {
   const beforeC = s.sim.clears;
   const beforeK = s.sim.keys;
+  const beforeP = s.sim.passed.reduce((a, b) => a + b, 0);
   const c = gatePoint(s, i, s.exiting?.dir ?? 0);
   const col = paintColor(s.level, s.sim.color[i]);
   // The brick sits on its last on-tray cell; one step in the exit direction crosses the gate.
@@ -252,6 +257,16 @@ function finishExit(s: Session, i: number) {
   noteChanges(s, beforeC, beforeK);
   s.exiting = null;
   if (won(s.level, s.sim)) onWin();
+  else if (s.sim.passed.reduce((a, b) => a + b, 0) > beforeP && deadEnd(s)) {
+    // Let the debris land, then say what went wrong.
+    s.stuck = true;
+    setTimeout(() => session === s && !s.over && onFail(), 900);
+  }
+}
+
+/** Only exits through limited gates can strand a brick. Proven dead ends only. */
+function deadEnd(s: Session): boolean {
+  return stranded(s.level, s.sim) || !!solve(s.level, 8000, Infinity, s.sim).exhausted;
 }
 
 /**
@@ -702,7 +717,7 @@ function helpScreen() {
       <p>Line it up with a <b>gate of its color</b> that it fits, and drag it out.</p>
       <p><b>Ice</b> (blue, with a snowflake) thaws after that many bricks have left. Frozen gates work the same way.</p>
       <p>A brick with a <b>key</b> unlocks <b>padlocked</b> bricks when it leaves. The padlock shows how many keys it still needs.</p>
-      <p><b>Arrows</b> on a brick mean it only slides that way. <b>Dots</b> on a gate count how many more bricks it lets through. A brick that stops on a <b>paint</b> splash turns that color. A <b>shutter</b> lifts when its count reaches zero.</p>
+      <p><b>Arrows</b> on a brick mean it only slides that way. <b>Dots</b> on a gate count how many more bricks it lets through, so spend them on the right bricks. <b>Trap</b> levels hide an easy exit that strands another brick. A brick that stops on a <b>paint</b> splash turns that color. A <b>shutter</b> lifts when its count reaches zero.</p>
       <p>Clear the tray before the clock runs out, or turn <b>Timer</b> off in Settings. Retry is always free.</p>
     </div>
     <button class="btn" data-go="title">Back</button>
@@ -786,8 +801,8 @@ function resultScreen(win: boolean) {
   const starHtml = [0, 1, 2].map((i) => `<span class="star${i < star ? ' on' : ''}" style="animation-delay:${0.18 + i * 0.18}s">★</span>`).join('');
   const node = el(`<div class="screen ${win ? 'win' : 'fail'}"><div class="card panel">
     <p class="eyebrow">Level ${s.level.n}</p>
-    <h1 class="sheet-title">${win ? 'Clear' : "Time's up"}</h1>
-    ${win ? `<div class="stars" aria-label="${star} stars">${starHtml}</div><p class="gain" id="gain">+0</p><p class="purse">Balance <b id="purse">${save.coins - gained}</b></p>` : '<p class="sub">The tray is still full. Take another run.</p>'}
+    <h1 class="sheet-title">${win ? 'Clear' : s.stuck ? 'Dead end' : "Time's up"}</h1>
+    ${win ? `<div class="stars" aria-label="${star} stars">${starHtml}</div><p class="gain" id="gain">+0</p><p class="purse">Balance <b id="purse">${save.coins - gained}</b></p>` : s.stuck ? '<p class="sub">That exit used up a gate another brick needed. It was a trap.</p>' : '<p class="sub">The tray is still full. Take another run.</p>'}
     <div class="stack">
       ${win ? `<button class="btn gold next" data-go="next">Next · Level ${s.level.n + 1}</button>` : ''}
       <button class="btn${win ? ' ghost' : ''}" data-go="retry">Retry</button>

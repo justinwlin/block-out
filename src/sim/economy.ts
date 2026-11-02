@@ -21,7 +21,7 @@ export function playerSeconds(n: number, m: Metrics): number {
 }
 
 export function winCoins(n: number, label: Label, timeLeft: number, untimed = false): number {
-  const bonus = label === 'Super Hard' ? 80 : label === 'Hard' ? 40 : label === 'Warmup' ? 15 : 0;
+  const bonus = label === 'Super Hard' ? 80 : label === 'Hard' || label === 'Trap' ? 40 : label === 'Warmup' ? 15 : 0;
   const timePay = untimed ? 0 : Math.floor(Math.max(0, timeLeft)) * 2;
   return 30 + n * 4 + bonus + timePay;
 }

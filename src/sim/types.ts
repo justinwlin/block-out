@@ -5,7 +5,7 @@ export type Dir = 0 | 1 | 2 | 3;
 export const DX = [0, 1, 0, -1] as const;
 export const DY = [-1, 0, 1, 0] as const;
 
-export type Label = 'Warmup' | 'Normal' | 'Hard' | 'Super Hard' | 'Milestone';
+export type Label = 'Warmup' | 'Normal' | 'Hard' | 'Super Hard' | 'Milestone' | 'Trap';
 export type Variant = 'rect' | 'U' | 'chambers' | 'checker' | 'packed';
 
 export interface Shape {
@@ -79,6 +79,8 @@ export interface Metrics {
   pieces: number;
   colors: number;
   obstacles: number;
+  /** Open exits along the solution that would strand the tray if taken. */
+  traps?: number;
 }
 
 export interface Level {

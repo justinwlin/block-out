@@ -4,7 +4,7 @@
 
 import { deadEndRatio } from './bots';
 import { difficultyScore, playerSeconds } from './economy';
-import { applyMove, gateFor, makeState, occupancy, replay } from './rules';
+import { applyMove, canMove, cloneState, dirAllowed, gateFor, makeState, occupancy, replay, stranded } from './rules';
 import { analyze } from './rules';
 import { hash32, Rng } from './rng';
 import { beamSolve, solve, type SolveResult } from './solver';
@@ -24,7 +24,7 @@ import {
   type Variant,
 } from './types';
 
-export const GEN_VERSION = 5;
+export const GEN_VERSION = 6;
 
 const cache = new Map<number, { level: Level; witness: Move[] }>();
 
@@ -77,6 +77,8 @@ interface Params {
   limitGates: boolean;
   /** Paint tiles to try to place. */
   paint: number;
+  /** Trap tray: rank hardest the candidates where an open exit strands another brick. */
+  trap: boolean;
 }
 
 function clamp(n: number, lo: number, hi: number): number {
@@ -94,6 +96,8 @@ export function paramsFor(n: number): Params {
   if (t >= 400 && !breather) pieces = 13;
   if (milestone) pieces = Math.min(13, pieces + 2);
   const variant = variantFor(n, breather);
+  // Every tenth level from 13, then every fifth from 100: some exit that looks free is a mistake.
+  const trap = !breather && !milestone && variant !== 'packed' && variant !== 'checker' && n >= 13 && (n % 10 === 3 || (n >= 100 && n % 10 === 8));
   // One color for the first two levels, then a new color roughly every six levels, up to all six.
   let colors = variant === 'checker' ? 2 : t <= 2 ? 1 : clamp(2 + Math.floor((t - 3) / 6), 2, COLORS.length);
   colors = Math.min(colors, pieces);
@@ -114,8 +118,9 @@ export function paramsFor(n: number): Params {
     milestone,
     pillars: variant === 'rect' && !breather && n >= 5 && n % 3 !== 1 ? clamp(1 + Math.floor((n - 5) / 20), 1, 3) : 0,
     oneWay: n >= 8 && variant !== 'packed' ? clamp(0.25 + n / 800, 0.25, 0.6) : 0,
-    limitGates: n >= 12 && variant !== 'packed',
+    limitGates: (n >= 12 && variant !== 'packed') || trap,
     paint: n >= 16 && colors >= 2 && variant !== 'checker' && variant !== 'packed' ? (n >= 60 && !breather ? 2 : 1) : 0,
+    trap,
   };
 }
 
@@ -166,7 +171,7 @@ function build(n: number, override?: Partial<Params>): { level: Level; witness: 
   const pool: { draft: Draft; quick: SolveResult; score: number }[] = [];
   const fail = { build: 0, witness: 0, solve: 0, timer: 0 };
   // More candidates later in the campaign, so the hardest pick keeps getting harder.
-  const attempts = params.breather ? 6 : params.milestone ? 16 : params.variant === 'packed' ? 12 : Math.min(16, 10 + Math.floor(n / 100));
+  const attempts = params.breather ? 6 : params.milestone || params.trap ? 16 : params.variant === 'packed' ? 12 : Math.min(16, 10 + Math.floor(n / 100));
   for (let attempt = 0; attempt < attempts; attempt++) {
     const draft = params.variant === 'packed' ? tryPacked(n, params, rng, attempt >= attempts / 2) : tryBuild(n, params, rng);
     if (!draft) { fail.build++; continue; }
@@ -174,6 +179,8 @@ function build(n: number, override?: Partial<Params>): { level: Level; witness: 
     const quick = quickSolve(draft.level, params);
     if (!quick) { fail.solve++; continue; }
     const metrics = metricsOf(draft.level, draft.witness, quick);
+    // Trap trays rank on traps, so every candidate is checked; elsewhere only the finalists.
+    if (params.trap) metrics.traps = countTraps(draft.level, [draft.witness, quick.moves]);
     if (playerSeconds(n, metrics) + 0.5 >= chooseTimer(n, params.breather, metrics)) { fail.timer++; continue; }
     // Meeting the setup target outranks raw score.
     pool.push({ draft, quick, score: rankScore(draft.level, metrics, quick.moves, params) });
@@ -196,6 +203,7 @@ function build(n: number, override?: Partial<Params>): { level: Level; witness: 
     const exact = solve(draft.level, packed ? 8000 : params.nodes, Infinity);
     const solved = exact.solved && exact.minMoves <= quick.minMoves && replay(draft.level, exact.moves) ? exact : quick;
     const metrics = metricsOf(draft.level, draft.witness, solved);
+    metrics.traps = countTraps(draft.level, [draft.witness, solved.moves]);
     const timer = chooseTimer(n, params.breather, metrics);
     if (playerSeconds(n, metrics) + 0.5 >= timer) continue;
     const score = rankScore(draft.level, metrics, solved.moves, params);
@@ -214,6 +222,8 @@ function build(n: number, override?: Partial<Params>): { level: Level; witness: 
  */
 function rankScore(level: Level, metrics: Metrics, moves: readonly Move[], params: Params): number {
   let score = difficultyScore(metrics) + (metrics.setups >= params.minSetups ? 1000 : 0);
+  const traps = metrics.traps ?? 0;
+  score += Math.min(traps, 3) * 6 + (params.trap && traps > 0 ? 600 : 0);
   if (level.rooms.length) {
     const s = makeState(level);
     let late = 0;
@@ -224,6 +234,46 @@ function rankScore(level: Level, metrics: Metrics, moves: readonly Move[], param
     score += late * 2;
   }
   return score;
+}
+
+/**
+ * Traps: walking each solution line, every way to take a brick out through a limited gate
+ * (at once, or after one lining-up slide) that leaves the tray unsolvable. Each
+ * (brick, gate) pair counts once. Dead ends are proven by the matching check or by a
+ * search that runs out of positions.
+ */
+/** Search budget for proving a position dead. Positions not proven in this many are not traps. */
+const PROOF_NODES = 3000;
+
+function countTraps(level: Level, lines: readonly (readonly Move[])[]): number {
+  const limited = level.gates.map((g, k) => (g.uses ? k : -1)).filter((k) => k >= 0);
+  if (!limited.length) return 0;
+  const seen = new Set<string>();
+  let traps = 0;
+  let checks = 0;
+  for (const moves of lines) {
+    const s = makeState(level);
+    for (const move of moves) {
+      for (let x = 0; x < level.pieces.length && checks < 16; x++) {
+        if (!canMove(level, s, x)) continue;
+        for (const g of limited) {
+          const key = `${x}:${g}`;
+          if (seen.has(key)) continue;
+          const bait = baitMoves(level, s, x, g);
+          if (!bait) continue;
+          // Taking it on the solution's own next move is not a trap.
+          if (bait.length === 1 && move.exit && move.i === x && move.dir === bait[0].dir) continue;
+          seen.add(key);
+          checks++;
+          const after = cloneState(s);
+          for (const m of bait) applyMove(level, after, m);
+          if (stranded(level, after) || solve(level, PROOF_NODES, Infinity, after).exhausted) traps++;
+        }
+      }
+      applyMove(level, s, move);
+    }
+  }
+  return traps;
 }
 
 /** Beam search for ranking; a tray the beam cannot clear is dropped and the next attempt runs. */
@@ -278,6 +328,7 @@ function chooseTimer(n: number, breather: boolean, m: Metrics): number {
 function labelFor(n: number, breather: boolean, m: Metrics): Label {
   if (breather) return 'Warmup';
   if (n >= 25 && n % 25 === 0) return 'Milestone';
+  if (paramsFor(n).trap && (m.traps ?? 0) > 0) return 'Trap';
   const score = difficultyScore(m);
   if (n >= 80 && score >= 48) return 'Super Hard';
   if (score >= 24) return 'Hard';
@@ -309,6 +360,7 @@ function present(level: Level, params: Params, label: Label): { hint: string; me
   }
   let hint = 'Drag a brick out through the gate of its color. It has to fit the opening.';
   if (label === 'Milestone') hint = 'Milestone tray. Bigger and tougher than the levels around it.';
+  else if (label === 'Trap') hint = 'Trap tray. An exit that looks free can use up a gate another brick needs.';
   else if (level.variant === 'packed') hint = 'A full tray. Find the brick that can leave first.';
   else if (level.paint?.length) hint = 'A brick that stops on a paint tile turns that color.';
   else if (mechanics.includes('limited-gate')) hint = 'A gate with dots closes after that many bricks pass through.';
@@ -697,7 +749,8 @@ function decorate(level: Level, witness: Move[], rng: Rng, params: Params): bool
     }
   }
   // Last, so frozen gates are known and skipped: a gate is either frozen or limited, not both.
-  if (params.limitGates) limitGates(level, witness, rng);
+  if (params.limitGates) limitGates(level, witness, rng, params.trap);
+  if (params.trap) addBait(level, witness, rng);
   return true;
 }
 
@@ -771,7 +824,7 @@ function addOneWay(level: Level, witness: Move[], rng: Rng, chance: number) {
  * another brick of the same color and width could also have used it. That turns a
  * spare route into a choice the player has to get right.
  */
-function limitGates(level: Level, witness: Move[], rng: Rng) {
+function limitGates(level: Level, witness: Move[], rng: Rng, trap = false) {
   const used = new Array<number>(level.gates.length).fill(0);
   const s = makeState(level);
   for (const move of witness) {
@@ -789,8 +842,97 @@ function limitGates(level: Level, witness: Move[], rng: Rng) {
       const sh = SHAPES[p.shape];
       return (vertical ? sh.w : sh.h) === gate.span && (p.color === gate.color || level.paint?.some((t) => t.color === gate.color));
     }).length;
-    if (fits > used[g] && rng.chance(0.6)) gate.uses = used[g];
+    if (fits > used[g] && (trap || rng.chance(0.6))) gate.uses = used[g];
   }
+}
+
+/**
+ * Bait for trap trays. Find a moment in the witness where brick X can leave through gate G,
+ * either right away or after one slide that lines it up. G is used only by brick W, later.
+ * Recolor G and W to X's color and limit G to one use. Taking the bait spends the gate W
+ * needs. The witness still works (X keeps its own gate), and the bait is kept only if
+ * taking it is a proven dead end.
+ */
+function addBait(level: Level, witness: Move[], rng: Rng) {
+  const users = level.gates.map(() => [] as number[]);
+  const exitStep = new Array<number>(level.pieces.length).fill(Infinity);
+  const sim = makeState(level);
+  witness.forEach((move, step) => {
+    if (move.exit) {
+      const g = gateFor(level, sim, move.i, move.dir, sim.x[move.i] + DX[move.dir] * move.dist, sim.y[move.i] + DY[move.dir] * move.dist);
+      if (g >= 0) users[g].push(move.i);
+      exitStep[move.i] = step;
+    }
+    applyMove(level, sim, move);
+  });
+  const painted = new Set((level.paint ?? []).map((t) => t.color));
+  const steps = witness.map((_, k) => k);
+  rng.shuffle(steps);
+  let proofs = 0;
+  for (const step of steps) {
+    const s = makeState(level);
+    for (let k = 0; k < step; k++) applyMove(level, s, witness[k]);
+    for (const g of rng.shuffle(level.gates.map((_, k) => k))) {
+      const gate = level.gates[g];
+      if (users[g].length !== 1 || gate.ice > 0 || painted.has(gate.color)) continue;
+      const w = users[g][0];
+      const wp = level.pieces[w];
+      // W leaves after this moment and keeps its color the whole way.
+      if (exitStep[w] <= step || wp.color !== gate.color) continue;
+      for (let x = 0; x < level.pieces.length; x++) {
+        if (x === w || s.out[x] || exitStep[x] <= step || !canMove(level, s, x)) continue;
+        const c = s.color[x];
+        if (c === gate.color || painted.has(c)) continue;
+        const before = { gate: gate.color, uses: gate.uses, w: wp.color };
+        gate.color = c;
+        wp.color = c;
+        s.color[w] = c;
+        const bait = baitMoves(level, s, x, g);
+        s.color[w] = before.w;
+        if (bait) {
+          gate.uses = 1;
+          proofs++;
+          if (replay(level, witness)) {
+            const at = makeState(level);
+            for (let k = 0; k < step; k++) applyMove(level, at, witness[k]);
+            for (const m of bait) applyMove(level, at, m);
+            if (stranded(level, at) || solve(level, PROOF_NODES, Infinity, at).exhausted) return;
+          }
+        }
+        gate.color = before.gate;
+        gate.uses = before.uses;
+        wp.color = before.w;
+        if (proofs >= 24) return;
+      }
+    }
+  }
+}
+
+/** Moves that take brick X out through gate G from state s: an exit, or one slide then the exit. */
+function baitMoves(level: Level, s: ReturnType<typeof makeState>, x: number, g: number): Move[] | null {
+  const gate = level.gates[g];
+  const shape = SHAPES[level.pieces[x].shape];
+  const vertical = gate.dir === 0 || gate.dir === 2;
+  if ((vertical ? shape.w : shape.h) !== gate.span || !dirAllowed(level, x, gate.dir)) return null;
+  const offset = gate.along - (vertical ? s.x[x] : s.y[x]);
+  const moves: Move[] = [];
+  const at = cloneState(s);
+  if (offset !== 0) {
+    const dir: Dir = vertical ? (offset > 0 ? 1 : 3) : offset > 0 ? 2 : 0;
+    const a = analyze(level, at, occupancy(level, at), x, dir);
+    if (a.max < Math.abs(offset)) return null;
+    const slide: Move = { i: x, dir, dist: Math.abs(offset), exit: false };
+    moves.push(slide);
+    applyMove(level, at, slide);
+    // A paint tile under the stop would change the color and spoil the bait.
+    if (at.color[x] !== s.color[x]) return null;
+  }
+  const a = analyze(level, at, occupancy(level, at), x, gate.dir);
+  if (!a.exitAt) return null;
+  const hit = gateFor(level, at, x, gate.dir, at.x[x] + DX[gate.dir] * a.exitAt, at.y[x] + DY[gate.dir] * a.exitAt);
+  if (hit !== g) return null;
+  moves.push({ i: x, dir: gate.dir, dist: a.exitAt, exit: true });
+  return moves;
 }
 
 /**

@@ -1,7 +1,7 @@
 // Forward solver. Free exits are taken at once (they only help), then A*
 // searches the setup slides. Heuristic: bricks left, plus one for each brick off any gate line.
 
-import { analyze, applyMove, canMove, cloneState, dirAllowed, legalMoves, makeState, occupancy, stateKey, takeFreeExits, won } from './rules';
+import { analyze, applyMove, canMove, cloneState, dirAllowed, exitLimited, legalMoves, makeState, occupancy, stateKey, stranded, takeFreeExits, won } from './rules';
 import { SHAPES } from './shapes';
 import { type Dir, type Level, type Move, type SimState } from './types';
 
@@ -15,6 +15,8 @@ export interface SolveResult {
   setups: number;
   /** True when A* exhausted the cheaper branches, so minMoves is a minimum. */
   optimal: boolean;
+  /** Unsolved and every reachable position was searched: a proven dead end. */
+  exhausted?: boolean;
 }
 
 interface Node {
@@ -76,6 +78,8 @@ function setupSlides(level: Level, s: SimState): Move[] {
     const shape = SHAPES[level.pieces[i].shape];
     for (let dir = 0 as Dir; dir < 4; dir++) {
       const a = analyze(level, s, occ, i, dir);
+      // Exits through limited gates are never taken for free, so they are choices here.
+      if (a.exitAt && exitLimited(level, s, i, dir, a.exitAt)) moves.push({ i, dir, dist: a.exitAt, exit: true });
       if (a.max < 1) continue;
       const dists = new Set<number>([a.max]);
       if (dir === 1 || dir === 3) {
@@ -128,6 +132,7 @@ export function beamSolve(level: Level, width = 36, depthLimit = 7): SolveResult
         const k = stateKey(s2);
         if (seen.has(k)) continue;
         seen.add(k);
+        if (stranded(level, s2)) continue;
         const moves = node.moves.concat(edge);
         if (won(level, s2)) return { ...finish(level, moves, seen.size), optimal: false };
         next.push({ s: s2, moves, left: remaining(level, s2) });
@@ -170,12 +175,13 @@ function pathOf(nodes: Node[], goal: number, prefix: Move[]): Move[] {
   return prefix.concat(...edges);
 }
 
-export function solve(level: Level, nodeLimit = 4000, timeLimitMs = 30): SolveResult {
+export function solve(level: Level, nodeLimit = 4000, timeLimitMs = 30, from?: SimState): SolveResult {
   const empty: SolveResult = { solved: false, moves: [], minMoves: 0, nodes: 0, branching: 0, forcedOrderings: 0, setups: 0, optimal: false };
   const prefix: Move[] = [];
-  const start = makeState(level);
+  const start = from ? cloneState(from) : makeState(level);
   takeFreeExits(level, start, prefix);
-  if (won(level, start)) return finish(level, prefix, 1);
+  if (won(level, start)) return from ? { ...empty, solved: true, moves: prefix, minMoves: prefix.length, optimal: true } : finish(level, prefix, 1);
+  if (stranded(level, start)) return { ...empty, exhausted: true };
 
   const nodes: Node[] = [{ s: start, g: prefix.length, parent: -1, edge: [] }];
   const best = new Map<string, number>();
@@ -187,6 +193,7 @@ export function solve(level: Level, nodeLimit = 4000, timeLimitMs = 30): SolveRe
   let goalId = -1;
   let goalG = Infinity;
   let proved = false;
+  let cut = false;
   const started = performance.now();
 
   while (heap.size) {
@@ -201,7 +208,10 @@ export function solve(level: Level, nodeLimit = 4000, timeLimitMs = 30): SolveRe
     if (closed.has(key)) continue;
     closed.add(key);
     expanded++;
-    if (expanded > nodeLimit || performance.now() - started > timeLimitMs) break;
+    if (expanded > nodeLimit || performance.now() - started > timeLimitMs) {
+      cut = true;
+      break;
+    }
 
     const moves = setupSlides(level, node.s);
     for (const slide of moves) {
@@ -215,6 +225,7 @@ export function solve(level: Level, nodeLimit = 4000, timeLimitMs = 30): SolveRe
       const prev = best.get(k);
       if (prev !== undefined && prev <= g) continue;
       best.set(k, g);
+      if (stranded(level, next)) continue;
       const id = nodes.length;
       nodes.push({ s: next, g, parent: item.i, edge });
       if (won(level, next)) {
@@ -225,8 +236,13 @@ export function solve(level: Level, nodeLimit = 4000, timeLimitMs = 30): SolveRe
       heap.push(g + remaining(level, next), g, id);
     }
   }
-  if (goalId >= 0) return { ...finish(level, pathOf(nodes, goalId, prefix), expanded), optimal: proved };
-  return { ...empty, nodes: expanded };
+  if (goalId >= 0) {
+    const moves = pathOf(nodes, goalId, prefix);
+    // From a mid-game position the move stats would replay from the start, so skip them.
+    if (from) return { ...empty, solved: true, moves, minMoves: moves.length, nodes: expanded, optimal: proved };
+    return { ...finish(level, moves, expanded), optimal: proved };
+  }
+  return { ...empty, nodes: expanded, exhausted: !cut };
 }
 
 function finish(level: Level, moves: Move[], nodes: number): SolveResult {

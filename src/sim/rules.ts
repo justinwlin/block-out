@@ -232,7 +232,11 @@ export function applyMove(level: Level, s: SimState, move: Move): void {
   settlePaint(level, s, move.i);
 }
 
-/** Take every exit that is already a straight drag, lowest piece id first. */
+/**
+ * Take every exit that is already a straight drag, lowest piece id first.
+ * Exits through a limited gate are skipped: spending a use can strand another brick,
+ * so the solver has to treat them as a choice. Every other exit only helps.
+ */
 export function takeFreeExits(level: Level, s: SimState, into?: Move[]): number {
   let n = 0;
   for (;;) {
@@ -244,7 +248,7 @@ export function takeFreeExits(level: Level, s: SimState, into?: Move[]): number 
         // Cheap filter first: an exit needs a gate in line with the brick.
         if (!lined(level, s, i, dir)) continue;
         const a = analyze(level, s, occ, i, dir);
-        if (a.exitAt) {
+        if (a.exitAt && !exitLimited(level, s, i, dir, a.exitAt)) {
           move = { i, dir, dist: a.exitAt, exit: true };
           break;
         }
@@ -257,6 +261,88 @@ export function takeFreeExits(level: Level, s: SimState, into?: Move[]): number 
     if (n > level.pieces.length + 2) break;
   }
   return n;
+}
+
+/** True if this exit would spend a use of a limited gate. */
+export function exitLimited(level: Level, s: SimState, piece: number, dir: Dir, dist: number): boolean {
+  const g = gateFor(level, s, piece, dir, s.x[piece] + DX[dir] * dist, s.y[piece] + DY[dir] * dist);
+  return g >= 0 && (level.gates[g].uses ?? 0) > 0;
+}
+
+/**
+ * Cheap proof of a dead end: the bricks left cannot all be matched to gates they fit,
+ * counting what each limited gate has left. A brick may use a gate of its color, or of
+ * any paint tile color. Reachability is ignored, so `false` does not mean solvable.
+ */
+export function stranded(level: Level, s: SimState): boolean {
+  const fit = fitTable(level);
+  if (!fit) return false;
+  const cap = level.gates.map((g, k) => (g.uses ? Math.max(0, g.uses - s.passed[k]) : Infinity));
+  const options: number[][] = [];
+  for (let i = 0; i < level.pieces.length; i++) {
+    if (s.out[i]) continue;
+    const opts: number[] = [];
+    let open = false;
+    for (const g of fit.gates[i]) {
+      if (cap[g] === 0) continue;
+      if (level.gates[g].color !== s.color[i] && !fit.paint.has(level.gates[g].color)) continue;
+      if (cap[g] === Infinity) {
+        open = true;
+        break;
+      }
+      opts.push(g);
+    }
+    if (open) continue;
+    if (!opts.length) return true;
+    options.push(opts);
+  }
+  if (!options.length) return false;
+  // Bipartite matching of bricks that only have limited gates to the uses left.
+  const used = cap.map(() => 0);
+  const holder: number[][] = cap.map(() => []);
+  const tryPlace = (b: number, seen: Set<number>): boolean => {
+    for (const g of options[b]) {
+      if (seen.has(g)) continue;
+      seen.add(g);
+      if (used[g] < cap[g]) {
+        used[g]++;
+        holder[g].push(b);
+        return true;
+      }
+      for (let k = 0; k < holder[g].length; k++) {
+        if (tryPlace(holder[g][k], seen)) {
+          holder[g][k] = b;
+          return true;
+        }
+      }
+    }
+    return false;
+  };
+  for (let b = 0; b < options.length; b++) if (!tryPlace(b, new Set())) return true;
+  return false;
+}
+
+/** Per brick, the gates its shape fits in a direction it may move. Null when no gate is limited. */
+const fitCache = new WeakMap<Level, { gates: number[][]; paint: Set<number> } | null>();
+
+function fitTable(level: Level): { gates: number[][]; paint: Set<number> } | null {
+  if (fitCache.has(level)) return fitCache.get(level)!;
+  let table: { gates: number[][]; paint: Set<number> } | null = null;
+  if (level.gates.some((g) => g.uses)) {
+    table = {
+      paint: new Set((level.paint ?? []).map((t) => t.color)),
+      gates: level.pieces.map((p, i) => {
+        const shape = SHAPES[p.shape];
+        const out: number[] = [];
+        level.gates.forEach((gate, g) => {
+          if (dirAllowed(level, i, gate.dir) && gate.span === (gate.dir === 0 || gate.dir === 2 ? shape.w : shape.h)) out.push(g);
+        });
+        return out;
+      }),
+    };
+  }
+  fitCache.set(level, table);
+  return table;
 }
 
 export function replay(level: Level, moves: readonly Move[]): boolean {
