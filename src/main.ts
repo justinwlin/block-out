@@ -57,7 +57,21 @@ interface ExitAnim {
   /** Fraction of the brick already broken into voxels. */
   spawned: number;
 }
+/** Everything an undo restores. */
+interface Undo {
+  x: Int16Array;
+  y: Int16Array;
+  out: Uint8Array;
+  color: Uint8Array;
+  passed: Uint8Array;
+  clears: number;
+  keys: number;
+  moves: number;
+}
+
 interface Drag {
+  /** Position before this drag, for undo. */
+  pre: Undo;
   i: number;
   pid: number;
   /** Grab point relative to the brick origin, in cells. */
@@ -90,6 +104,9 @@ interface Session {
   gained: number;
   /** Set when an exit through a limited gate left the tray unsolvable. */
   stuck: boolean;
+  /** Drags made, counted against par. */
+  moves: number;
+  history: Undo[];
 }
 
 const canvas = document.querySelector<HTMLCanvasElement>('#board')!;
@@ -191,6 +208,8 @@ function requestLevel(n: number): Promise<Level> {
 }
 
 let startToken = 0;
+// Start on the level the home screen offers, so Play is usually instant.
+void requestLevel(save.snapshot?.n ?? save.unlocked);
 
 function startLevel(n: number, resume = false) {
   const token = ++startToken;
@@ -235,6 +254,8 @@ function beginLevel(level: Level, resume: boolean) {
     frame: freshFrame(level, live, sim),
     hintFor: 2.6,
     stuck: false,
+    moves: snap && snap.n === n ? (snap.moves ?? 0) : 0,
+    history: [],
     gained: 0,
   };
   session.frame.clears = sim.clears;
@@ -243,8 +264,9 @@ function beginLevel(level: Level, resume: boolean) {
   mode = 'play';
   hintEl.textContent = level.hint;
   renderChrome();
-  // Build the next level in the worker so "Next" opens instantly.
+  // Build the next two levels in the worker so "Next" opens instantly.
   void requestLevel(n + 1);
+  void requestLevel(n + 2);
 }
 
 function juice(kind: string) {
@@ -312,7 +334,7 @@ function finishExit(s: Session, i: number) {
   else if (s.sim.passed.reduce((a, b) => a + b, 0) > beforeP && deadEnd(s)) {
     // Let the debris land, then say what went wrong.
     s.stuck = true;
-    setTimeout(() => session === s && !s.over && onFail(), 900);
+    setTimeout(() => session === s && !s.over && s.stuck && onFail(), 900);
   }
 }
 
@@ -378,6 +400,7 @@ function beginExit(s: Session, i: number, dir: Dir, x: number, y: number, speed 
   if (s.exiting || s.over) return;
   const live = s.live[i];
   const shape = SHAPES[s.level.pieces[i].shape];
+  if (s.drag) record(s, s.drag.pre);
   s.drag = null;
   s.sim.x[i] = x;
   s.sim.y[i] = y;
@@ -543,7 +566,7 @@ function onPointerDown(ev: PointerEvent) {
   const c = cellPoint(s, p);
   const px = s.sim.x[i];
   const py = s.sim.y[i];
-  s.drag = { i, pid: ev.pointerId, gx: c.x - px, gy: c.y - py, px, py, occ: occupancy(s.level, s.sim), vx: 0, vy: 0, t: ev.timeStamp, moved: false };
+  s.drag = { pre: capture(s), i, pid: ev.pointerId, gx: c.x - px, gy: c.y - py, px, py, occ: occupancy(s.level, s.sim), vx: 0, vy: 0, t: ev.timeStamp, moved: false };
   s.live[i].lift = 4;
   canvas.setPointerCapture(ev.pointerId);
   audio.play('grab');
@@ -595,6 +618,58 @@ function onPointerUp(ev: PointerEvent) {
   // A stale velocity from an earlier stop should not count as a flick.
   if (ev.timeStamp - d.t > 60) { d.vx = 0; d.vy = 0; }
   releaseDrag(s, d);
+  // A flick may have started an exit (recorded there); otherwise count a drag that moved.
+  if (!s.exiting && (s.sim.x[d.i] !== d.pre.x[d.i] || s.sim.y[d.i] !== d.pre.y[d.i])) record(s, d.pre);
+}
+
+function capture(s: Session): Undo {
+  const m = s.sim;
+  return { x: m.x.slice(), y: m.y.slice(), out: m.out.slice(), color: m.color.slice(), passed: m.passed.slice(), clears: m.clears, keys: m.keys, moves: s.moves };
+}
+
+function record(s: Session, pre: Undo) {
+  s.history.push(pre);
+  if (s.history.length > 200) s.history.shift();
+  s.moves++;
+  paintHud();
+}
+
+/** Step back one drag. Also climbs out of a dead end. */
+function undo() {
+  const s = session;
+  if (!s || s.exiting || s.drag || !s.history.length) return;
+  if (s.over && !s.stuck) return;
+  const u = s.history.pop()!;
+  const m = s.sim;
+  m.x.set(u.x);
+  m.y.set(u.y);
+  m.out.set(u.out);
+  m.color.set(u.color);
+  m.passed.set(u.passed);
+  m.clears = u.clears;
+  m.keys = u.keys;
+  s.moves = u.moves;
+  s.live.forEach((live, i) => {
+    // A brick that had left reappears in place rather than flying back from the gate.
+    if (live.out && !m.out[i]) {
+      live.x = m.x[i];
+      live.y = m.y[i];
+      live.flash = 1;
+    }
+    live.out = !!m.out[i];
+    live.tx = m.x[i];
+    live.ty = m.y[i];
+  });
+  s.frame.clears = m.clears;
+  s.frame.keys = m.keys;
+  if (s.over) {
+    s.over = false;
+    s.stuck = false;
+    mode = 'play';
+    renderChrome();
+  }
+  audio.play('tick');
+  paintHud();
 }
 
 function snapshotOf(s: Session): Snapshot {
@@ -608,6 +683,7 @@ function snapshotOf(s: Session): Snapshot {
     boosters: s.boosters,
     color: Array.from(s.sim.color),
     passed: Array.from(s.sim.passed),
+    moves: s.moves,
   };
 }
 
@@ -621,7 +697,7 @@ function onWin() {
   if (!s || s.over) return;
   s.over = true;
   const untimed = !save.settings.timer;
-  const star = stars(s.level.timer, s.timeLeft, s.boosters, untimed);
+  const star = stars(s.moves, s.level.metrics.par);
   const firstClear = !save.best[String(s.level.n)];
   s.gained = firstClear ? winCoins(s.level.n, s.level.label, s.timeLeft, untimed) : 15;
   save.coins += s.gained;
@@ -657,6 +733,7 @@ function clockText(sec: number) {
 function renderChrome() {
   const playing = mode === 'play' || mode === 'pause';
   hud.classList.toggle('hidden', !playing);
+  document.querySelector('#btn-undo')!.classList.toggle('hidden', mode !== 'play');
   screens.innerHTML = '';
   if (mode === 'title') screens.append(titleScreen());
   else if (mode === 'levels') screens.append(levelScreen());
@@ -673,6 +750,11 @@ function paintHud() {
   const s = session;
   if (!s) return;
   document.querySelector('#hud-level')!.textContent = `Lv ${s.level.n}`;
+  const par = s.level.metrics.par;
+  const moves = document.querySelector<HTMLElement>('#hud-moves')!;
+  moves.textContent = par ? `${s.moves} / par ${par}` : `${s.moves} moves`;
+  moves.classList.toggle('over', !!par && s.moves > par);
+  document.querySelector<HTMLButtonElement>('#btn-undo')!.disabled = !s.history.length;
   document.querySelector('#hud-label')!.textContent = s.level.label === 'Normal' ? '' : `${s.level.label} level`;
   const time = document.querySelector<HTMLElement>('#hud-time')!;
   const timed = save.settings.timer;
@@ -770,7 +852,7 @@ function helpScreen() {
       <p><b>Ice</b> (blue, with a snowflake) thaws after that many bricks have left. Frozen gates work the same way.</p>
       <p>A brick with a <b>key</b> unlocks <b>padlocked</b> bricks when it leaves. The padlock shows how many keys it still needs.</p>
       <p><b>Arrows</b> on a brick mean it only slides that way. <b>Dots</b> on a gate count how many more bricks it lets through, so spend them on the right bricks. <b>Trap</b> levels hide an easy exit that strands another brick. A brick that stops on a <b>paint</b> splash turns that color. Two different paints under it cancel out. A <b>shutter</b> lifts when its count reaches zero.</p>
-      <p>Clear the tray before the clock runs out, or turn <b>Timer</b> off in Settings. Retry is always free.</p>
+      <p>Clear the tray before the clock runs out, or turn <b>Timer</b> off in Settings. Finish within <b>par</b>, the fewest drags we found, for three stars. <b>Undo</b> steps back one drag, even out of a dead end.</p>
     </div>
     <button class="btn" data-go="title">Back</button>
   </div></div>`);
@@ -848,21 +930,23 @@ function pauseScreen() {
 
 function resultScreen(win: boolean) {
   const s = session!;
-  const star = win ? stars(s.level.timer, s.timeLeft, s.boosters, !save.settings.timer) : 0;
+  const star = win ? stars(s.moves, s.level.metrics.par) : 0;
   const gained = win ? s.gained : 0;
   const starHtml = [0, 1, 2].map((i) => `<span class="star${i < star ? ' on' : ''}" style="animation-delay:${0.18 + i * 0.18}s">★</span>`).join('');
   const node = el(`<div class="screen ${win ? 'win' : 'fail'}"><div class="card panel">
     <p class="eyebrow">Level ${s.level.n}</p>
     <h1 class="sheet-title">${win ? 'Clear' : s.stuck ? 'Dead end' : "Time's up"}</h1>
-    ${win ? `<div class="stars" aria-label="${star} stars">${starHtml}</div><p class="gain" id="gain">+0</p><p class="purse">Balance <b id="purse">${save.coins - gained}</b></p>` : s.stuck ? '<p class="sub">That exit used up a gate another brick needed. It was a trap.</p>' : '<p class="sub">The tray is still full. Take another run.</p>'}
+    ${win ? `<div class="stars" aria-label="${star} stars">${starHtml}</div><p class="sub">${s.moves} moves · par ${s.level.metrics.par ?? s.moves}</p><p class="gain" id="gain">+0</p><p class="purse">Balance <b id="purse">${save.coins - gained}</b></p>` : s.stuck ? '<p class="sub">That exit used up a gate another brick needed. It was a trap.</p>' : '<p class="sub">The tray is still full. Take another run.</p>'}
     <div class="stack">
       ${win ? `<button class="btn gold next" data-go="next">Next · Level ${s.level.n + 1}</button>` : ''}
+      ${!win && s.stuck ? '<button class="btn gold" data-go="undo">Undo last move</button>' : ''}
       <button class="btn${win ? ' ghost' : ''}" data-go="retry">Retry</button>
       <button class="btn ghost" data-go="levels">Levels</button>
     </div>
   </div></div>`);
   if (win) tickGain(node.querySelector('#gain')!, node.querySelector('#purse')!, save.coins - gained, gained);
   node.querySelector('[data-go="next"]')?.addEventListener('click', () => startLevel(s.level.n + 1));
+  node.querySelector('[data-go="undo"]')?.addEventListener('click', () => undo());
   node.querySelector('[data-go="retry"]')!.addEventListener('click', () => startLevel(s.level.n));
   node.querySelector('[data-go="levels"]')!.addEventListener('click', () => open('levels'));
   return node;
@@ -888,6 +972,10 @@ function open(next: Mode, back?: Mode) {
   renderChrome();
 }
 
+document.querySelector('#btn-undo')!.addEventListener('click', () => undo());
+document.addEventListener('keydown', (e) => {
+  if ((e.key === 'z' && (e.metaKey || e.ctrlKey)) || e.key === 'u') undo();
+});
 document.querySelector('#btn-pause')!.addEventListener('click', () => {
   if (mode !== 'play') return;
   persistProgress();

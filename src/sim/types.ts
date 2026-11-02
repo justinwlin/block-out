@@ -81,6 +81,8 @@ export interface Metrics {
   obstacles: number;
   /** Open exits along the solution that would strand the tray if taken. */
   traps?: number;
+  /** Drags in the best solution found. One drag may corner and exit, so it can cover several moves. */
+  par?: number;
 }
 
 export interface Level {

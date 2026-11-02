@@ -26,7 +26,7 @@ import {
   type Variant,
 } from './types';
 
-export const GEN_VERSION = 8;
+export const GEN_VERSION = 9;
 
 const cache = new Map<number, { level: Level; witness: Move[] }>();
 
@@ -213,7 +213,7 @@ function build(n: number, override?: Partial<Params>): { level: Level; witness: 
   // The beam ranks every candidate; the exact solver re-measures the top three and picks.
   // Node-limited, never time-limited: level N must come out the same on every device.
   pool.sort((a, b) => b.score - a.score);
-  let best: { level: Level; witness: Move[]; score: number } | null = null;
+  let best: { level: Level; witness: Move[]; score: number; solved: SolveResult } | null = null;
   // Full trays have huge position counts: re-measure only the top one.
   const packed = params.variant === 'packed';
   // Hardest-start search: off for the first levels and warmups, which should read at a glance.
@@ -224,7 +224,8 @@ function build(n: number, override?: Partial<Params>): { level: Level; witness: 
     const options: { level: Level; witness: Move[]; quick: SolveResult | null }[] = [{ level: draft.level, witness: draft.witness, quick }];
     for (const st of starts) options.push({ level: withStart(draft.level, st), witness: [], quick: null });
     for (const opt of options) {
-      const exact = solve(opt.level, packed ? 8000 : params.nodes, Infinity);
+      // Alternate starts get a smaller budget: one that needs a deep search to confirm is skipped.
+      const exact = solve(opt.level, packed ? 8000 : opt.quick ? params.nodes : 8000, Infinity);
       const ok = exact.solved && replay(opt.level, exact.moves);
       const solved = opt.quick ? (ok && exact.minMoves <= opt.quick.minMoves ? exact : opt.quick) : ok ? exact : null;
       if (!solved) continue;
@@ -235,13 +236,121 @@ function build(n: number, override?: Partial<Params>): { level: Level; witness: 
       if (playerSeconds(n, metrics) + 0.5 >= timer) continue;
       let score = rankScore(opt.level, metrics, solved.moves, params);
       score += depthBonus(depthOf(opt.level, solved.moves));
-      if (!best || score > best.score) {
-        best = { level: finish(opt.level, metrics, timer, params), witness, score };
-      }
+      if (!best || score > best.score) best = { level: opt.level, witness, score, solved };
     }
   }
   if (!best) return fallback(n, params);
-  return { level: best.level, witness: best.witness };
+  // Polish the winner: drop mechanics that do nothing, try ice that makes it deeper.
+  const polished = n > 3 && !packed ? polish(best.level, best.solved, best.score, params, rng) : null;
+  const level = polished?.level ?? best.level;
+  const solved = polished?.solved ?? best.solved;
+  const witness = polished ? solved.moves : best.witness;
+  const metrics = metricsOf(level, witness, solved);
+  metrics.traps = countTraps(level, [witness, solved.moves]);
+  metrics.par = dragsOf(solved.moves);
+  return { level: finish(level, metrics, chooseTimer(n, params.breather, metrics), params), witness };
+}
+
+/**
+ * Par in drags: consecutive moves of the same brick are one drag, since a drag can turn
+ * corners and carry straight out through a gate.
+ */
+export function dragsOf(moves: readonly Move[]): number {
+  let n = 0;
+  for (let k = 0; k < moves.length; k++) if (k === 0 || moves[k].i !== moves[k - 1].i) n++;
+  return n;
+}
+
+/** Full score of a finished candidate: the ranking plus planning depth. Null if unsolved. */
+function evaluate(level: Level, params: Params, nodes: number, spent: { nodes: number }): { score: number; solved: SolveResult } | null {
+  const solved = solve(level, nodes, Infinity);
+  spent.nodes += solved.nodes;
+  if (!solved.solved || !replay(level, solved.moves)) return null;
+  const metrics = metricsOf(level, solved.moves, solved);
+  metrics.traps = countTraps(level, [solved.moves]);
+  if (playerSeconds(level.n, metrics) + 0.5 >= chooseTimer(level.n, params.breather, metrics)) return null;
+  return { score: rankScore(level, metrics, solved.moves, params) + depthBonus(depthOf(level, solved.moves)), solved };
+}
+
+/** Per edit, a tray that needs more search than this to confirm is rejected. */
+const POLISH_NODES = 6000;
+/** Total search the polish pass may spend on one level. */
+const POLISH_BUDGET = 60000;
+
+function cloneLevel(level: Level): Level {
+  return { ...level, pieces: level.pieces.map((p) => ({ ...p })), gates: level.gates.map((g) => ({ ...g })) };
+}
+
+/**
+ * Polish, a small hill climb over the mechanics with the solver as judge.
+ * 1. Prune: take each mechanic out in turn (ice, frozen gate, padlock, arrow, gate limit).
+ *    If the tray is no less deep without it, it was decoration, so it stays out.
+ * 2. Rework ice: try frozen bricks and gates with thaw counts that do not match the
+ *    solution's exit order, and keep any change that makes the tray deeper.
+ */
+function polish(start: Level, startSolved: SolveResult, startScore: number, params: Params, rng: Rng): { level: Level; solved: SolveResult } | null {
+  let cur = cloneLevel(start);
+  let curScore = startScore;
+  let curSolved = startSolved;
+  let changed = false;
+  // Budgets are solver nodes, not time, so a level comes out the same on every device.
+  const spent = { nodes: 0 };
+  const tryEdit = (edit: (l: Level) => boolean, keepTies: boolean) => {
+    if (spent.nodes >= POLISH_BUDGET) return;
+    const next = cloneLevel(cur);
+    if (!edit(next)) return;
+    const ev = evaluate(next, params, POLISH_NODES, spent);
+    if (!ev) return;
+    if (ev.score > curScore || (keepTies && ev.score >= curScore)) {
+      cur = next;
+      curScore = ev.score;
+      curSolved = ev.solved;
+      changed = true;
+    }
+  };
+  type Edit = (l: Level) => boolean;
+  const prunes: Edit[] = [];
+  cur.pieces.forEach((p, i) => {
+    if (p.ice) prunes.push((l) => ((l.pieces[i].ice = 0), true));
+    if (p.axis) prunes.push((l) => ((l.pieces[i].axis = 0), true));
+    if (p.lock)
+      prunes.push((l) => {
+        l.pieces[i].lock = 0;
+        if (!l.pieces.some((q) => q.lock > 0)) for (const q of l.pieces) q.keys = 0;
+        return true;
+      });
+  });
+  cur.gates.forEach((g, k) => {
+    if (g.ice) prunes.push((l) => ((l.gates[k].ice = 0), true));
+    // Trap gates are judged by the trap bonus, so a bait gate survives only if it is a trap.
+    if (g.uses) prunes.push((l) => ((l.gates[k].uses = 0), true));
+  });
+  for (const edit of rng.shuffle(prunes)) tryEdit(edit, true);
+
+  if (params.ice) {
+    const count = cur.pieces.length;
+    for (let t = 0; t < 10; t++) {
+      const kind = rng.int(0, 3);
+      const k = rng.int(1, Math.max(2, count - 1));
+      if (kind < 2) {
+        const i = rng.int(0, count);
+        tryEdit((l) => {
+          const p = l.pieces[i];
+          if (p.lock || p.keys || p.ice === k) return false;
+          p.ice = k;
+          return true;
+        }, false);
+      } else if (params.iceGate) {
+        const g = rng.int(0, cur.gates.length);
+        tryEdit((l) => {
+          if (l.gates[g].uses || l.gates[g].ice === k) return false;
+          l.gates[g].ice = k;
+          return true;
+        }, false);
+      }
+    }
+  }
+  return changed ? { level: cur, solved: curSolved } : null;
 }
 
 /**

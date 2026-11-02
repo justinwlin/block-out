@@ -21,9 +21,11 @@ describe('timer setting', () => {
     expect(frozen.freeze).toBeCloseTo(1.5);
   });
 
-  it('still pays a clear, with three stars, when there is no clock', () => {
-    expect(stars(60, 0, 0, true)).toBe(3);
-    expect(stars(60, 0, 1, true)).toBe(1);
+  it('stars come from par, and a clear pays with no clock', () => {
+    expect(stars(10, 10)).toBe(3);
+    expect(stars(15, 10)).toBe(2);
+    expect(stars(16, 10)).toBe(1);
+    expect(stars(40, undefined)).toBe(3);
     expect(winCoins(4, 'Normal', 0, true)).toBeGreaterThan(0);
     expect(winCoins(4, 'Normal', 40, true)).toBe(winCoins(4, 'Normal', 0, true));
     expect(winCoins(4, 'Normal', 40, false)).toBeGreaterThan(winCoins(4, 'Normal', 40, true));

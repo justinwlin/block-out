@@ -1,6 +1,9 @@
 // Level design report. Usage:
 //   npx tsx scripts/design-report.ts [from] [to]      banded depth summary
 //   npx tsx scripts/design-report.ts show <n>         draw level n and its shortest solution
+import { spawn } from 'node:child_process';
+import { availableParallelism } from 'node:os';
+import { fileURLToPath } from 'node:url';
 import { depthOf } from '../src/sim/depth';
 import { difficultyScore } from '../src/sim/economy';
 import { generateBuilt } from '../src/sim/levelgen';
@@ -57,19 +60,42 @@ if (process.argv[2] === 'show') {
       console.log(`\n${LETTER[m.i]} ${m.exit ? 'exits' : 'slides'} ${DIRS[m.dir]}\n${draw(level, s)}`);
     }
   }
-} else {
-  const from = Number(process.argv[2] ?? 1);
-  const to = Number(process.argv[3] ?? 200);
-  const rows: { n: number; variant: string; breather: boolean; fallback: boolean; deep: number; chain: number; greedy: number; min: number; score: number; ms: number }[] = [];
-  for (let n = from; n <= to; n++) {
+} else if (process.argv[2] === 'rows') {
+  // Worker mode: measure levels a..b and print one JSON row per level.
+  const [a, b] = [Number(process.argv[3]), Number(process.argv[4])];
+  for (let n = a; n <= b; n++) {
     const t = performance.now();
     const { level } = generateBuilt(n);
     const ms = performance.now() - t;
     const sol = solve(level, 30000, Infinity);
-    const moves = sol.solved ? sol.moves : [];
-    const d = depthOf(level, moves);
-    rows.push({ n, variant: level.label === 'Warmup' ? 'warmup' : level.variant, breather: level.label === 'Warmup', fallback: level.fallback, deep: d.deep, chain: d.maxChain, greedy: d.greedyWins, min: sol.minMoves, score: difficultyScore(level.metrics), ms });
+    const d = depthOf(level, sol.solved ? sol.moves : []);
+    console.log(JSON.stringify({ n, variant: level.label === 'Warmup' ? 'warmup' : level.variant, breather: level.label === 'Warmup', fallback: level.fallback, deep: d.deep, chain: d.maxChain, greedy: d.greedyWins, min: sol.minMoves, score: difficultyScore(level.metrics), ms }));
   }
+} else {
+  const from = Number(process.argv[2] ?? 1);
+  const to = Number(process.argv[3] ?? 200);
+  // Interleaved shards on every core: level n goes to shard n % jobs, so each shard gets a mix.
+  const jobs = Math.max(1, Math.min(availableParallelism() - 1, to - from + 1));
+  type Row = { n: number; variant: string; breather: boolean; fallback: boolean; deep: number; chain: number; greedy: number; min: number; score: number; ms: number };
+  const chunks: [number, number][] = [];
+  const size = Math.ceil((to - from + 1) / (jobs * 4));
+  for (let a = from; a <= to; a += size) chunks.push([a, Math.min(to, a + size - 1)]);
+  const rows: Row[] = [];
+  const run = (a: number, b: number) =>
+    new Promise<void>((done) => {
+      const child = spawn(process.execPath, [...process.execArgv, fileURLToPath(import.meta.url), 'rows', String(a), String(b)], { stdio: ['ignore', 'pipe', 'inherit'], env: process.env });
+      let buf = '';
+      child.stdout.on('data', (d) => (buf += d));
+      child.on('close', () => {
+        for (const line of buf.split('\n')) if (line.startsWith('{')) rows.push(JSON.parse(line));
+        done();
+      });
+    });
+  const queue = chunks.slice();
+  await Promise.all(Array.from({ length: jobs }, async () => {
+    for (let c = queue.shift(); c; c = queue.shift()) await run(c[0], c[1]);
+  }));
+  rows.sort((x, y) => x.n - y.n);
   const bands = [[1, 20], [21, 50], [51, 100], [101, 200], [201, 300], [301, 500]].filter(([lo, hi]) => hi >= from && lo <= to);
   const avg = (rs: typeof rows, k: 'deep' | 'chain' | 'greedy' | 'min' | 'score' | 'ms') => rs.reduce((a, r) => a + r[k], 0) / rs.length;
   console.log('band       n  greedy  shallow  deep  chain   min  score  gen-ms(p95)');

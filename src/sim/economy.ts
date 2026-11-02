@@ -26,10 +26,12 @@ export function winCoins(n: number, label: Label, timeLeft: number, untimed = fa
   return 30 + n * 4 + bonus + timePay;
 }
 
-export function stars(timer: number, timeLeft: number, boosters: number, untimed = false): 1 | 2 | 3 {
-  if (boosters > 0) return 1;
-  if (untimed || timeLeft >= timer * 0.4) return 3;
-  return 2;
+/** Three stars at par or better, two within half again, one for any clear. */
+export function stars(moves: number, par: number | undefined): 1 | 2 | 3 {
+  if (!par) return 3;
+  if (moves <= par) return 3;
+  if (moves <= Math.ceil(par * 1.5)) return 2;
+  return 1;
 }
 
 /** One frame of the clock. With the timer off, nothing counts down and the level cannot time out. */

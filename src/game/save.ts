@@ -23,6 +23,8 @@ export interface Snapshot {
   /** Brick colors after paint, and gate pass counts. Missing in older snapshots. */
   color?: number[];
   passed?: number[];
+  /** Drags made so far. */
+  moves?: number;
 }
 
 export interface Save {

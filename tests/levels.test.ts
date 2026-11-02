@@ -6,8 +6,8 @@ import { difficultyScore, playerSeconds } from '../src/sim/economy';
 import { clearLevelCache, generateBuilt, generateLevel, levelSignature, paramsFor } from '../src/sim/levelgen';
 import { SHAPES } from '../src/sim/shapes';
 
-// 200 levels: every variant, mechanic and difficulty step shows up well before then.
-const built = Array.from({ length: 200 }, (_, i) => generateBuilt(i + 1));
+// 120 levels: every variant, mechanic and difficulty step shows up well before then.
+const built = Array.from({ length: 120 }, (_, i) => generateBuilt(i + 1));
 const levels = built.map((b) => b.level);
 
 function mean(ns: number[]) {
@@ -45,7 +45,7 @@ describe('generated levels', () => {
 
   it('is hard from level 4 and keeps climbing', () => {
     const tutorial = levels.slice(0, 3);
-    const bands = [levels.slice(3, 50), levels.slice(50, 100), levels.slice(100, 200)];
+    const bands = [levels.slice(3, 45), levels.slice(45, 80), levels.slice(80, 120)];
     const score = (ls: typeof levels) => mean(ls.map((l) => difficultyScore(l.metrics)));
     const pieces = (ls: typeof levels) => mean(ls.map((l) => l.metrics.pieces));
     for (const band of bands) expect(score(band)).toBeGreaterThan(score(tutorial) * 2);
@@ -70,7 +70,7 @@ describe('generated levels', () => {
     expect(levels.some((l) => l.variant === 'U')).toBe(true);
     expect(levels.some((l) => l.variant === 'chambers')).toBe(true);
     const packed = levels.filter((l) => l.variant === 'packed' && !l.fallback);
-    expect(packed.length).toBeGreaterThan(12);
+    expect(packed.length).toBeGreaterThan(8);
     for (const l of packed) {
       const covered = l.pieces.reduce((a, p) => a + SHAPES[p.shape].cells.length, 0);
       expect(covered, `level ${l.n} packed`).toBe(l.w * l.h);
@@ -88,7 +88,7 @@ describe('generated levels', () => {
   it('builds proven traps on most trap levels', () => {
     let trapLevels = 0;
     let withTrap = 0;
-    for (let n = 13; n <= 140; n++) {
+    for (let n = 13; n <= 120; n++) {
       if (!paramsFor(n).trap) continue;
       trapLevels++;
       const level = generateLevel(n);

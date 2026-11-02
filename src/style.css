@@ -79,8 +79,19 @@ button, input { font-family: inherit; }
 #hud-time.warn { color: #ffb15a; }
 #hud-time.danger { color: #ff5d52; }
 #hud-label { font-size: 13px; font-weight: 700; letter-spacing: 0.04em; color: #ff8a7a; min-height: 16px; }
+.hud-right { justify-self: end; display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
+#hud-moves { font-size: 13px; font-weight: 700; color: #b9c0ff; font-variant-numeric: tabular-nums; padding-right: 4px; }
+#hud-moves.over { color: #ffb15a; }
+#btn-undo {
+  position: fixed;
+  z-index: 3;
+  left: max(16px, env(safe-area-inset-left));
+  bottom: calc(18px + env(safe-area-inset-bottom));
+  font-size: 26px;
+  color: #fff;
+}
+#btn-undo:disabled { opacity: 0.4; }
 #hud-level {
-  justify-self: end;
   font-weight: 700;
   font-size: 16px;
   padding: 6px 14px;
@@ -93,7 +104,7 @@ button, input { font-family: inherit; }
   position: fixed;
   z-index: 3;
   left: 50%;
-  bottom: calc(18px + env(safe-area-inset-bottom));
+  bottom: calc(80px + env(safe-area-inset-bottom));
   transform: translateX(-50%);
   width: max-content;
   max-width: min(420px, calc(100% - 32px));
