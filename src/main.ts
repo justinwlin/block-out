@@ -2,8 +2,7 @@ import '@fontsource/fredoka/500.css';
 import '@fontsource/fredoka/700.css';
 import './style.css';
 import { registerSW } from 'virtual:pwa-register';
-import { destroyColor, destroyPiece } from './sim/boosters';
-import { CLOCK_SECONDS, PRICES, stars, tickClock, winCoins } from './sim/economy';
+import { stars, tickClock, winCoins } from './sim/economy';
 import { feedback } from './sim/feel';
 import { generateLevel } from './sim/levelgen';
 import { applyMove, analyze, canMove, makeState, occupancy, pieceActive, won } from './sim/rules';
@@ -15,9 +14,21 @@ import { burst, geomFor, paintColor, render, stepFx, type Floater, type Frame, t
 import { load, write, type Save, type Settings, type Snapshot } from './game/save';
 
 registerSW({ immediate: true });
+// Drop the cache-busting query left by "Update now".
+if (new URLSearchParams(location.search).has('u')) history.replaceState(null, '', location.pathname);
+
+/** Unregister the service worker, clear its caches, and reload past the HTTP cache. */
+async function forceUpdate() {
+  try {
+    const regs = (await navigator.serviceWorker?.getRegistrations()) ?? [];
+    await Promise.all(regs.map((r) => r.unregister()));
+    if ('caches' in window) await Promise.all((await caches.keys()).map((k) => caches.delete(k)));
+  } finally {
+    location.replace(`${location.pathname}?u=${Date.now()}`);
+  }
+}
 
 type Mode = 'title' | 'levels' | 'play' | 'pause' | 'win' | 'fail' | 'help' | 'settings';
-type Boost = 'clock' | 'rocket' | 'ufo';
 
 interface Live {
   /** Drawn position, eased toward tx/ty every frame. */
@@ -65,7 +76,6 @@ interface Session {
   timeLeft: number;
   freeze: number;
   boosters: number;
-  target: Boost | null;
   drag: Drag | null;
   exiting: ExitAnim | null;
   over: boolean;
@@ -78,11 +88,8 @@ interface Session {
 const canvas = document.querySelector<HTMLCanvasElement>('#board')!;
 const ctx = canvas.getContext('2d')!;
 const hud = document.querySelector<HTMLElement>('#hud')!;
-const bar = document.querySelector<HTMLElement>('#bar')!;
 const screens = document.querySelector<HTMLElement>('#screens')!;
 const hintEl = document.querySelector<HTMLElement>('#hint')!;
-const targetEl = document.querySelector<HTMLElement>('#target-banner')!;
-const toastEl = document.querySelector<HTMLElement>('#toast')!;
 const audio = new AudioBus();
 const haptics = new Haptics();
 
@@ -94,7 +101,6 @@ let mode: Mode = 'title';
 let settingsBack: Mode = 'title';
 let chapter = 0;
 let session: Session | null = null;
-let toastTimer = 0;
 /** Shown on the home screen: package version, commit and build time. */
 const VERSION_LABEL = `v${__APP_VERSION__} · ${__BUILD_SHA__} · ${new Date(__BUILD_TIME__).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}`;
 
@@ -158,7 +164,6 @@ function startLevel(n: number, resume = false) {
     timeLeft: snap && snap.n === n ? snap.timeLeft : level.timer,
     freeze: snap && snap.n === n ? snap.freeze : 0,
     boosters: snap && snap.n === n ? snap.boosters : 0,
-    target: null,
     drag: null,
     exiting: null,
     over: false,
@@ -386,79 +391,6 @@ function localPoint(ev: PointerEvent) {
   return { x: ev.clientX - r.left, y: ev.clientY - r.top };
 }
 
-function spend(kind: Boost): boolean {
-  if (!session) return false;
-  const price = PRICES[kind];
-  if (save.coins < price) {
-    showToast(`Need ${price} coins`);
-    juice('bump');
-    return false;
-  }
-  save.coins -= price;
-  session.boosters++;
-  write(save);
-  return true;
-}
-
-function useClock() {
-  if (!session || session.over || !save.settings.timer) return;
-  if (session.freeze > 0) return;
-  if (!spend('clock')) return;
-  session.freeze = CLOCK_SECONDS;
-  juice('clock');
-  showToast('Clock stopped');
-}
-
-function arm(kind: 'rocket' | 'ufo') {
-  if (!session || session.over) return;
-  if (session.target === kind) {
-    session.target = null;
-    return;
-  }
-  if (save.coins < PRICES[kind]) {
-    showToast(`Need ${PRICES[kind]} coins`);
-    juice('bump');
-    return;
-  }
-  session.target = kind;
-  audio.play('ui');
-}
-
-function fireAt(i: number) {
-  const s = session;
-  if (!s || !s.target || s.over) return;
-  if (!pieceActive(s.level, s.sim, i)) {
-    juice('bump');
-    return;
-  }
-  const kind = s.target;
-  if (!spend(kind)) return;
-  const beforeC = s.sim.clears;
-  const beforeK = s.sim.keys;
-  const col = paintColor(s.level, s.level.pieces[i].color);
-  if (kind === 'rocket') {
-    const c = pieceCenter(s, i);
-    destroyPiece(s.level, s.sim, i);
-    s.live[i].out = true;
-    burst(s.frame.particles, c.x, c.y, col.hex, feedback('rocket', false).particles);
-    juice('rocket');
-  } else {
-    const color = s.level.pieces[i].color;
-    for (let k = 0; k < s.level.pieces.length; k++) {
-      if (s.level.pieces[k].color !== color || !pieceActive(s.level, s.sim, k)) continue;
-      s.live[k].out = true;
-    }
-    burst(s.frame.particles, pieceCenter(s, i).x, pieceCenter(s, i).y, col.hex, feedback('ufo', false).particles);
-    destroyColor(s.level, s.sim, color);
-    juice('ufo');
-  }
-  s.frame.clears = s.sim.clears;
-  s.frame.keys = s.sim.keys;
-  s.target = null;
-  noteChanges(s, beforeC, beforeK);
-  if (won(s.level, s.sim)) onWin();
-}
-
 function cellPoint(s: Session, p: { x: number; y: number }) {
   return { x: (p.x - s.geom.ox) / s.geom.cell, y: (p.y - s.geom.oy) / s.geom.cell };
 }
@@ -470,10 +402,6 @@ function onPointerDown(ev: PointerEvent) {
   const p = localPoint(ev);
   const i = hitPiece(s, p.x, p.y);
   if (i < 0) return;
-  if (s.target) {
-    fireAt(i);
-    return;
-  }
   if (!canMove(s.level, s.sim, i)) {
     juice('bump');
     s.live[i].flash = 1;
@@ -558,7 +486,6 @@ function onWin() {
   const s = session;
   if (!s || s.over) return;
   s.over = true;
-  s.target = null;
   const untimed = !save.settings.timer;
   const star = stars(s.level.timer, s.timeLeft, s.boosters, untimed);
   const firstClear = !save.best[String(s.level.n)];
@@ -596,7 +523,6 @@ function clockText(sec: number) {
 function renderChrome() {
   const playing = mode === 'play' || mode === 'pause';
   hud.classList.toggle('hidden', !playing);
-  bar.classList.toggle('hidden', !playing);
   screens.innerHTML = '';
   if (mode === 'title') screens.append(titleScreen());
   else if (mode === 'levels') screens.append(levelScreen());
@@ -606,17 +532,14 @@ function renderChrome() {
   else if (mode === 'win' && session) screens.append(resultScreen(true));
   else if (mode === 'fail' && session) screens.append(resultScreen(false));
   hintEl.classList.toggle('hidden', mode !== 'play' || !session || session.hintFor <= 0);
-  targetEl.classList.toggle('hidden', !(mode === 'play' && session?.target));
-  if (session?.target === 'rocket') targetEl.textContent = 'Tap a brick to rocket';
-  if (session?.target === 'ufo') targetEl.textContent = 'Tap a brick — every brick of that color goes';
   paintHud();
 }
 
 function paintHud() {
   const s = session;
   if (!s) return;
-  document.querySelector('#hud-level')!.textContent = `Level ${s.level.n}`;
-  document.querySelector('#hud-label')!.textContent = s.level.label === 'Normal' ? '' : s.level.label;
+  document.querySelector('#hud-level')!.textContent = `Lv ${s.level.n}`;
+  document.querySelector('#hud-label')!.textContent = s.level.label === 'Normal' ? '' : `${s.level.label} level`;
   const time = document.querySelector<HTMLElement>('#hud-time')!;
   const timed = save.settings.timer;
   time.classList.toggle('hidden', !timed);
@@ -624,13 +547,6 @@ function paintHud() {
   time.classList.toggle('danger', timed && s.freeze <= 0 && s.timeLeft <= 10);
   time.classList.toggle('warn', timed && s.freeze <= 0 && s.timeLeft <= 20 && s.timeLeft > 10);
   time.style.color = timed && s.freeze > 0 ? '#8ee7ff' : '';
-  document.querySelector('#hud-coins')!.textContent = String(save.coins);
-  document.querySelector('#boost-clock')!.classList.toggle('hidden', !timed);
-  for (const kind of ['clock', 'rocket', 'ufo'] as const) {
-    const btn = document.querySelector<HTMLButtonElement>(`#boost-${kind}`)!;
-    btn.classList.toggle('on', s.target === kind);
-    btn.disabled = save.coins < PRICES[kind] && s.target !== kind;
-  }
 }
 
 function el(html: string): HTMLElement {
@@ -718,7 +634,7 @@ function helpScreen() {
       <p><b>Drag</b> a brick along a row or a column. It stops when it hits something.</p>
       <p>Line it up with a <b>gate of its color</b> that it fits, and drag it out.</p>
       <p><b>Ice</b> and <b>padlocks</b> wait until enough bricks (or keys) have left. A <b>shutter</b> lifts when its count hits zero and reveals more bricks.</p>
-      <p>Clear the tray before the clock runs out, or turn <b>Timer</b> off in Settings (it's on the pause screen too). Coins buy a freeze, a rocket, or a UFO. Nothing is behind a paywall, and retry is free.</p>
+      <p>Clear the tray before the clock runs out, or turn <b>Timer</b> off in Settings (it's on the pause screen too). Retry is always free.</p>
     </div>
     <button class="btn" data-go="title">Back</button>
   </div></div>`);
@@ -751,14 +667,23 @@ function settingsScreen() {
   const node = el(`<div class="screen solid"><div class="card panel" style="text-align:left">
     <h1 class="sheet-title">Settings</h1>
     ${settingRow('timer', 'Timer')}
-    <p class="note">Off: no countdown, no time-out, and no freeze booster. The tray can still be cleared.</p>
+    <p class="note">Off: no countdown and no time-out. The tray can still be cleared.</p>
     ${settingRow('sound', 'Sound')}
     ${settingRow('haptics', 'Haptics')}
     ${settingRow('reduceMotion', 'Reduce motion')}
     ${settingRow('symbols', 'Color symbols')}
-    <button class="btn" data-go="back" style="margin-top:16px;width:100%">Back</button>
+    <button class="btn ghost" data-go="update" style="margin-top:16px;width:100%">Update now</button>
+    <p class="note" style="text-align:center">${VERSION_LABEL}</p>
+    <button class="btn" data-go="back" style="margin-top:8px;width:100%">Back</button>
   </div></div>`);
   bindSettings(node);
+  const upd = node.querySelector<HTMLButtonElement>('[data-go="update"]')!;
+  upd.addEventListener('click', () => {
+    write(save);
+    upd.disabled = true;
+    upd.textContent = 'Updating…';
+    void forceUpdate();
+  });
   node.querySelector('[data-go="back"]')!.addEventListener('click', () => open(settingsBack));
   return node;
 }
@@ -827,21 +752,12 @@ function open(next: Mode, back?: Mode) {
   renderChrome();
 }
 
-function showToast(text: string) {
-  toastEl.textContent = text;
-  toastEl.classList.add('show');
-  toastTimer = 1.6;
-}
-
 document.querySelector('#btn-pause')!.addEventListener('click', () => {
   if (mode !== 'play') return;
   persistProgress();
   mode = 'pause';
   renderChrome();
 });
-document.querySelector('#boost-clock')!.addEventListener('click', () => { audio.unlock(); useClock(); paintHud(); });
-document.querySelector('#boost-rocket')!.addEventListener('click', () => { audio.unlock(); arm('rocket'); paintHud(); });
-document.querySelector('#boost-ufo')!.addEventListener('click', () => { audio.unlock(); arm('ufo'); paintHud(); });
 
 canvas.addEventListener('pointerdown', onPointerDown);
 canvas.addEventListener('pointermove', onPointerMove);
@@ -903,10 +819,6 @@ function loop(now: number) {
     if (clock.failed && !s.over) onFail();
     stepFx(s.frame, dt);
     if (Math.floor(s.frame.time) !== Math.floor(s.frame.time - dt)) persistProgress();
-  }
-  if (toastTimer > 0) {
-    toastTimer -= dt;
-    if (toastTimer <= 0) toastEl.classList.remove('show');
   }
   if (s) {
     s.frame.dragId = s.drag?.i ?? -1;

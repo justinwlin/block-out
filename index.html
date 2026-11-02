@@ -29,29 +29,15 @@
   <body>
     <canvas id="board" aria-label="Puzzle tray"></canvas>
     <header id="hud" class="hidden">
-      <button id="btn-pause" class="icon" aria-label="Pause"><i></i><i></i></button>
+      <button id="btn-pause" class="icon raised" aria-label="Pause"><i></i><i></i></button>
       <div class="hud-mid">
-        <div id="hud-level">Level 1</div>
+        <div id="hud-time">1:00</div>
         <div id="hud-label"></div>
       </div>
-      <div id="hud-time">1:00</div>
-      <div id="hud-coins">900</div>
+      <div id="hud-level">Lv 1</div>
     </header>
     <p id="hint" class="hidden"></p>
-    <p id="target-banner" class="hidden">Tap a brick</p>
-    <footer id="bar" class="hidden">
-      <button id="boost-clock" class="boost" type="button">
-        <span class="boost-ico">⏱</span><span>Freeze</span><small>300</small>
-      </button>
-      <button id="boost-rocket" class="boost" type="button">
-        <span class="boost-ico">🚀</span><span>Rocket</span><small>600</small>
-      </button>
-      <button id="boost-ufo" class="boost" type="button">
-        <span class="boost-ico">🛸</span><span>UFO</span><small>1200</small>
-      </button>
-    </footer>
     <div id="screens"></div>
-    <div id="toast" class="toast"></div>
     <div id="safe-probe" aria-hidden="true"></div>
     <script type="module" src="/src/main.ts"></script>
   </body>

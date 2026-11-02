@@ -39,7 +39,7 @@ export function fresh(): Save {
     unlocked: 1,
     coins: START_COINS,
     best: {},
-    settings: { timer: true, sound: true, haptics: true, reduceMotion: false, symbols: true },
+    settings: { timer: true, sound: true, haptics: true, reduceMotion: false, symbols: false },
     snapshot: null,
   };
 }

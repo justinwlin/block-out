@@ -48,11 +48,11 @@ export interface Frame {
 }
 
 export function geomFor(viewW: number, viewH: number, boardW: number, boardH: number, safeTop: number, safeBot: number): Geom {
-  const top = 84 + safeTop;
-  const bot = 112 + safeBot;
-  const frame = 0.62;
-  const cell = Math.max(28, Math.min(84, Math.floor(Math.min(
-    (viewW - 16) / (boardW + frame * 2),
+  const top = 92 + safeTop;
+  const bot = 64 + safeBot;
+  const frame = 0.48;
+  const cell = Math.max(28, Math.min(88, Math.floor(Math.min(
+    (viewW - 12) / (boardW + frame * 2),
     (viewH - top - bot) / (boardH + frame * 2),
   ))));
   const ox = Math.round((viewW - cell * boardW) / 2);
@@ -62,7 +62,7 @@ export function geomFor(viewW: number, viewH: number, boardW: number, boardH: nu
 
 /** Frame wall thickness around the tray, in pixels. */
 export function wallFor(cell: number): number {
-  return Math.round(cell * 0.5);
+  return Math.round(cell * 0.42);
 }
 
 export function paintColor(level: Level, color: number): { hex: string; deep: string; symbol: string } {
@@ -90,56 +90,53 @@ export function render(ctx: CanvasRenderingContext2D, g: Geom, frame: Frame) {
   const bh = cell * level.h;
   const wall = wallFor(cell);
 
-  // Raised frame: drop shadow, dark base, lit top face.
+  // Frame: drop shadow, dark lip, flat lit face.
+  const fr = Math.max(10, wall * 0.7);
   ctx.save();
-  ctx.shadowColor = 'rgba(4, 6, 20, 0.55)';
-  ctx.shadowBlur = 24;
-  ctx.shadowOffsetY = 12;
-  round(ctx, ox - wall, oy - wall + 6, bw + wall * 2, bh + wall * 2, wall * 0.9);
-  ctx.fillStyle = '#1b2050';
+  ctx.shadowColor = 'rgba(4, 6, 20, 0.6)';
+  ctx.shadowBlur = 28;
+  ctx.shadowOffsetY = 14;
+  round(ctx, ox - wall, oy - wall, bw + wall * 2, bh + wall * 2 + 6, fr);
+  ctx.fillStyle = '#262c66';
   ctx.fill();
   ctx.restore();
-  round(ctx, ox - wall, oy - wall, bw + wall * 2, bh + wall * 2, wall * 0.9);
+  round(ctx, ox - wall, oy - wall, bw + wall * 2, bh + wall * 2, fr);
   const fg = ctx.createLinearGradient(0, oy - wall, 0, oy + bh + wall);
-  fg.addColorStop(0, '#5a64b8');
-  fg.addColorStop(1, '#3c4590');
+  fg.addColorStop(0, '#5862bd');
+  fg.addColorStop(1, '#454ea3');
   ctx.fillStyle = fg;
   ctx.fill();
-  round(ctx, ox - wall + 2, oy - wall + 2, bw + wall * 2 - 4, bh + wall * 2 - 4, wall * 0.85);
-  ctx.strokeStyle = 'rgba(255,255,255,.18)';
-  ctx.lineWidth = 2;
+  round(ctx, ox - wall + 1.5, oy - wall + 1.5, bw + wall * 2 - 3, bh + wall * 2 - 3, fr - 1);
+  ctx.strokeStyle = 'rgba(255,255,255,.16)';
+  ctx.lineWidth = 1.5;
   ctx.stroke();
 
-  // Recessed floor.
-  round(ctx, ox - 3, oy - 3, bw + 6, bh + 6, 10);
-  ctx.fillStyle = '#161a3e';
+  // Recessed floor with a tight tile grid.
+  const lip = Math.max(2, cell * 0.04);
+  round(ctx, ox - lip, oy - lip, bw + lip * 2, bh + lip * 2, Math.max(4, cell * 0.1));
+  ctx.fillStyle = '#10143a';
   ctx.fill();
   for (let y = 0; y < level.h; y++) {
     for (let x = 0; x < level.w; x++) {
       const px = ox + x * cell;
       const py = oy + y * cell;
       if (!level.floor[y * level.w + x]) {
-        ctx.fillStyle = '#4a53a4';
-        round(ctx, px - 1, py - 1, cell + 2, cell + 2, 6);
-        ctx.fill();
+        ctx.fillStyle = '#4e57ae';
+        ctx.fillRect(px - 0.5, py - 0.5, cell + 1, cell + 1);
         continue;
       }
       const checker = level.variant === 'checker' && (x + y) % 2 === 0;
-      const inset = Math.max(2, cell * 0.04);
-      round(ctx, px + inset, py + inset, cell - inset * 2, cell - inset * 2, cell * 0.14);
-      ctx.fillStyle = checker ? '#2c3266' : '#222859';
-      ctx.fill();
-      ctx.fillStyle = 'rgba(0,0,0,.18)';
-      round(ctx, px + inset, py + cell - inset - cell * 0.06, cell - inset * 2, cell * 0.06, 3);
+      const inset = Math.max(1.5, cell * 0.025);
+      round(ctx, px + inset, py + inset, cell - inset * 2, cell - inset * 2, cell * 0.08);
+      ctx.fillStyle = checker ? '#252b62' : '#1c2152';
       ctx.fill();
     }
   }
-  // Inner shadow along the top edge of the floor.
-  const isg = ctx.createLinearGradient(0, oy - 3, 0, oy + cell * 0.35);
-  isg.addColorStop(0, 'rgba(0,0,0,.35)');
+  const isg = ctx.createLinearGradient(0, oy - lip, 0, oy + cell * 0.3);
+  isg.addColorStop(0, 'rgba(0,0,0,.4)');
   isg.addColorStop(1, 'rgba(0,0,0,0)');
   ctx.fillStyle = isg;
-  ctx.fillRect(ox - 3, oy - 3, bw + 6, cell * 0.35);
+  ctx.fillRect(ox - lip, oy - lip, bw + lip * 2, cell * 0.3);
 
   for (const gate of level.gates) drawGate(ctx, g, frame, gate);
 
@@ -200,53 +197,81 @@ function drawGate(ctx: CanvasRenderingContext2D, g: Geom, frame: Frame, gate: Le
   const iced = frame.clears < gate.ice;
   const wall = wallFor(cell);
   const span = gate.span * cell;
-  const inset = Math.max(3, cell * 0.06);
-  const thick = wall - inset;
+  const lip = Math.max(2, cell * 0.04);
+  const inset = Math.max(2, cell * 0.035);
+  const thick = wall - lip - inset;
   let x = 0;
   let y = 0;
   let w = 0;
   let h = 0;
-  if (gate.dir === 0) { x = ox + gate.along * cell + inset; y = oy - thick - 2; w = span - inset * 2; h = thick; }
-  if (gate.dir === 2) { x = ox + gate.along * cell + inset; y = oy + level.h * cell + 2; w = span - inset * 2; h = thick; }
-  if (gate.dir === 3) { x = ox - thick - 2; y = oy + gate.along * cell + inset; w = thick; h = span - inset * 2; }
-  if (gate.dir === 1) { x = ox + level.w * cell + 2; y = oy + gate.along * cell + inset; w = thick; h = span - inset * 2; }
-  const hex = iced ? '#cfeaf5' : col.hex;
-  const deep = iced ? '#6f9fb0' : col.deep;
-  const r = Math.min(w, h) * 0.38;
-  // Dark lip, then glossy face.
-  round(ctx, x, y + 3, w, h, r);
+  if (gate.dir === 0) { x = ox + gate.along * cell + inset; y = oy - lip - thick; w = span - inset * 2; h = thick; }
+  if (gate.dir === 2) { x = ox + gate.along * cell + inset; y = oy + level.h * cell + lip; w = span - inset * 2; h = thick; }
+  if (gate.dir === 3) { x = ox - lip - thick; y = oy + gate.along * cell + inset; w = thick; h = span - inset * 2; }
+  if (gate.dir === 1) { x = ox + level.w * cell + lip; y = oy + gate.along * cell + inset; w = thick; h = span - inset * 2; }
+  const hex = iced ? '#d6eef7' : col.hex;
+  const deep = iced ? '#7fa9b9' : col.deep;
+  const r = Math.max(4, Math.min(w, h) * 0.28);
+  const d = Math.max(2, cell * 0.05);
+  round(ctx, x, y, w, h, r);
   ctx.fillStyle = deep;
   ctx.fill();
-  round(ctx, x, y, w, h, r);
+  round(ctx, x, y, w, h - d, r);
   ctx.fillStyle = hex;
   ctx.fill();
   ctx.save();
-  round(ctx, x, y, w, h, r);
+  round(ctx, x, y, w, h - d, r);
   ctx.clip();
   const gg = ctx.createLinearGradient(0, y, 0, y + h);
-  gg.addColorStop(0, 'rgba(255,255,255,.45)');
-  gg.addColorStop(0.5, 'rgba(255,255,255,.05)');
-  gg.addColorStop(1, 'rgba(0,0,0,.15)');
+  gg.addColorStop(0, 'rgba(255,255,255,.4)');
+  gg.addColorStop(0.45, 'rgba(255,255,255,0)');
   ctx.fillStyle = gg;
   ctx.fillRect(x, y, w, h);
   ctx.restore();
   const s = Math.min(w, h);
   if (iced) {
     const left = gate.ice - frame.clears;
-    ctx.fillStyle = '#14343d';
-    ctx.font = `700 ${Math.max(12, s * 0.6)}px Fredoka, sans-serif`;
+    ctx.font = `700 ${Math.max(12, s * 0.62)}px Fredoka, sans-serif`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.fillText(String(left), x + w / 2, y + h / 2 + 1);
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = '#ffffff';
+    ctx.strokeText(String(left), x + w / 2, y + (h - d) / 2 + 1);
+    ctx.fillStyle = '#7a5a3a';
+    ctx.fillText(String(left), x + w / 2, y + (h - d) / 2 + 1);
     return;
   }
-  // One chevron per cell of span, pointing out of the tray.
-  for (let k = 0; k < gate.span; k++) {
-    const t = (k + 0.5) / gate.span;
-    const cx = gate.dir === 0 || gate.dir === 2 ? x + w * t : x + w / 2;
-    const cy = gate.dir === 0 || gate.dir === 2 ? y + h / 2 : y + h * t;
-    chevron(ctx, cx, cy, gate.dir, s * 0.62, 'rgba(255,255,255,.95)', deep);
-  }
+  // One arrow, centered: the gate reads as a door, not a pattern.
+  arrow(ctx, x + w / 2, y + (h - d) / 2, gate.dir, s * 0.5, deep);
+}
+
+function arrow(ctx: CanvasRenderingContext2D, x: number, y: number, dir: Dir, s: number, shadow: string) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate((dir - 1) * Math.PI / 2);
+  const tri = () => {
+    ctx.beginPath();
+    ctx.moveTo(-s * 0.32, -s * 0.42);
+    ctx.lineTo(s * 0.4, 0);
+    ctx.lineTo(-s * 0.32, s * 0.42);
+    ctx.closePath();
+  };
+  ctx.lineJoin = 'round';
+  ctx.save();
+  ctx.translate(0, 1.5);
+  tri();
+  ctx.fillStyle = shadow;
+  ctx.strokeStyle = shadow;
+  ctx.lineWidth = s * 0.18;
+  ctx.fill();
+  ctx.stroke();
+  ctx.restore();
+  tri();
+  ctx.fillStyle = '#ffffff';
+  ctx.strokeStyle = '#ffffff';
+  ctx.lineWidth = s * 0.18;
+  ctx.fill();
+  ctx.stroke();
+  ctx.restore();
 }
 
 function drawPiece(ctx: CanvasRenderingContext2D, g: Geom, frame: Frame, i: number) {
@@ -263,7 +288,7 @@ function drawPiece(ctx: CanvasRenderingContext2D, g: Geom, frame: Frame, i: numb
   const has = (x: number, y: number) => set.has(`${x},${y}`);
   const cx = ox + (live.x + shape.w / 2) * cell;
   const cy = oy + (live.y + shape.h / 2) * cell;
-  const depth = Math.max(3, cell * 0.09);
+  const depth = Math.max(3, cell * 0.075);
   const face = hot ? mix(col.hex, '#ffffff', 0.12) : col.hex;
   ctx.save();
   ctx.translate(cx, cy - lift);
@@ -271,16 +296,16 @@ function drawPiece(ctx: CanvasRenderingContext2D, g: Geom, frame: Frame, i: numb
   ctx.translate(-cx, -cy);
   // Base (the brick's side wall) with a contact shadow.
   ctx.shadowColor = 'rgba(4, 6, 24, 0.5)';
-  ctx.shadowBlur = dragging ? 18 : 6;
-  ctx.shadowOffsetY = dragging ? 10 : 3;
+  ctx.shadowBlur = dragging ? 18 : 4;
+  ctx.shadowOffsetY = dragging ? 10 : 2;
   fillPiece(ctx, ox, oy, cell, live.x, live.y, shape.cells, has, col.deep, 0);
   ctx.shadowColor = 'transparent';
   // Top face, raised by `depth`.
   ctx.save();
   ctx.translate(0, -depth);
   // Lit rim: a lighter silhouette peeking out above the face.
-  const rim = Math.max(1.5, cell * 0.03);
-  fillPiece(ctx, ox, oy, cell, live.x, live.y, shape.cells, has, mix(face, '#ffffff', 0.4), 0);
+  const rim = Math.max(1.5, cell * 0.025);
+  fillPiece(ctx, ox, oy, cell, live.x, live.y, shape.cells, has, mix(face, '#ffffff', 0.35), 0);
   ctx.translate(0, rim);
   fillPiece(ctx, ox, oy, cell, live.x, live.y, shape.cells, has, face, 0);
   ctx.save();
@@ -289,9 +314,9 @@ function drawPiece(ctx: CanvasRenderingContext2D, g: Geom, frame: Frame, i: numb
   ctx.clip();
   const top = oy + live.y * cell;
   const grad = ctx.createLinearGradient(0, top, 0, top + shape.h * cell);
-  grad.addColorStop(0, 'rgba(255,255,255,.30)');
-  grad.addColorStop(0.35, 'rgba(255,255,255,0)');
-  grad.addColorStop(1, 'rgba(0,0,0,.10)');
+  grad.addColorStop(0, 'rgba(255,255,255,.18)');
+  grad.addColorStop(0.5, 'rgba(255,255,255,0)');
+  grad.addColorStop(1, 'rgba(0,0,0,.08)');
   ctx.fillStyle = grad;
   ctx.fillRect(ox + live.x * cell, top, shape.w * cell, shape.h * cell);
   if ((live.flash ?? 0) > 0) {
@@ -299,8 +324,12 @@ function drawPiece(ctx: CanvasRenderingContext2D, g: Geom, frame: Frame, i: numb
     ctx.fillRect(ox + live.x * cell, top, shape.w * cell, shape.h * cell);
   }
   ctx.restore();
+  // Four studs per cell.
+  const sr = cell * 0.125;
   for (const [dx, dy] of shape.cells) {
-    stud(ctx, ox + (live.x + dx + 0.5) * cell, oy + (live.y + dy + 0.5) * cell, cell * 0.21, face, col.deep);
+    for (const sx of [0.29, 0.71]) {
+      for (const sy of [0.27, 0.69]) stud(ctx, ox + (live.x + dx + sx) * cell, oy + (live.y + dy + sy) * cell, sr, face, col.deep);
+    }
   }
   const mx = ox + (live.x + (shape.w - 1) / 2) * cell + cell / 2;
   const my = oy + (live.y + (shape.h - 1) / 2) * cell + cell / 2;
@@ -382,19 +411,26 @@ function tracePiece(
   has: (x: number, y: number) => boolean,
   grow: number,
 ) {
-  const gap = Math.max(3, cell * 0.11) - grow;
-  const radius = Math.max(4, cell * 0.2);
-  const bleed = 0.75;
+  const gap = Math.max(1.5, cell * 0.03) - grow;
+  const radius = Math.max(3, cell * 0.11);
+  const bleed = 0.5;
   for (const [dx, dy] of cells) {
-    let x = ox + (ax + dx) * cell + gap;
-    let y = oy + (ay + dy) * cell + gap;
-    let w = cell - gap * 2;
-    let h = cell - gap * 2;
-    if (has(dx - 1, dy)) { x -= gap + bleed; w += gap + bleed; }
-    if (has(dx + 1, dy)) w += gap + bleed;
-    if (has(dx, dy - 1)) { y -= gap + bleed; h += gap + bleed; }
-    if (has(dx, dy + 1)) h += gap + bleed;
-    addRound(ctx, x, y, w, h, radius);
+    const l = has(dx - 1, dy);
+    const r = has(dx + 1, dy);
+    const u = has(dx, dy - 1);
+    const d = has(dx, dy + 1);
+    // Extend into each same-brick neighbor so the cells fuse into one solid body.
+    const x0 = ox + (ax + dx) * cell + (l ? -bleed : gap);
+    const y0 = oy + (ay + dy) * cell + (u ? -bleed : gap);
+    const x1 = ox + (ax + dx + 1) * cell - (r ? -bleed : gap);
+    const y1 = oy + (ay + dy + 1) * cell - (d ? -bleed : gap);
+    // Round a corner only where both of its sides are open edges of the brick.
+    addCorners(ctx, x0, y0, x1 - x0, y1 - y0, [
+      !l && !u ? radius : 0,
+      !r && !u ? radius : 0,
+      !r && !d ? radius : 0,
+      !l && !d ? radius : 0,
+    ]);
   }
 }
 
@@ -432,25 +468,22 @@ function drawShutter(ctx: CanvasRenderingContext2D, g: Geom, x: number, y: numbe
 }
 
 function stud(ctx: CanvasRenderingContext2D, x: number, y: number, r: number, hex: string, deep: string) {
-  const side = r * 0.32;
+  const side = r * 0.38;
+  // Soft contact shadow, then the cylinder wall, then a lit domed cap.
   ctx.beginPath();
-  ctx.fillStyle = 'rgba(0,0,0,.22)';
-  ctx.arc(x, y + side + 1, r, 0, Math.PI * 2);
+  ctx.fillStyle = 'rgba(0,0,0,.16)';
+  ctx.arc(x + r * 0.12, y + side + r * 0.14, r * 1.02, 0, Math.PI * 2);
   ctx.fill();
   ctx.beginPath();
-  ctx.fillStyle = mix(deep, hex, 0.35);
+  ctx.fillStyle = mix(hex, deep, 0.45);
   ctx.arc(x, y + side, r, 0, Math.PI * 2);
   ctx.fill();
+  ctx.fillRect(x - r, y, r * 2, side);
+  const cap = ctx.createLinearGradient(x, y - r, x, y + r);
+  cap.addColorStop(0, mix(hex, '#ffffff', 0.32));
+  cap.addColorStop(1, mix(hex, '#ffffff', 0.04));
   ctx.beginPath();
-  ctx.fillStyle = hex;
-  ctx.arc(x, y, r, 0, Math.PI * 2);
-  ctx.fill();
-  const rg = ctx.createRadialGradient(x - r * 0.35, y - r * 0.4, r * 0.1, x, y, r);
-  rg.addColorStop(0, 'rgba(255,255,255,.55)');
-  rg.addColorStop(0.6, 'rgba(255,255,255,.08)');
-  rg.addColorStop(1, 'rgba(0,0,0,.08)');
-  ctx.beginPath();
-  ctx.fillStyle = rg;
+  ctx.fillStyle = cap;
   ctx.arc(x, y, r, 0, Math.PI * 2);
   ctx.fill();
 }
@@ -459,7 +492,7 @@ function mix(hex: string, withHex: string, t: number): string {
   const a = hexToRgb(hex);
   const b = hexToRgb(withHex);
   const c = a.map((v, i) => Math.round(v + (b[i] - v) * t));
-  return `rgb(${c[0]}, ${c[1]}, ${c[2]})`;
+  return `#${c.map((v) => v.toString(16).padStart(2, '0')).join('')}`;
 }
 
 function hexToRgb(hex: string): [number, number, number] {
@@ -503,32 +536,24 @@ function keyGlyph(ctx: CanvasRenderingContext2D, x: number, y: number, s: number
   ctx.restore();
 }
 
-function chevron(ctx: CanvasRenderingContext2D, x: number, y: number, dir: Dir, s: number, color: string, outline: string) {
-  ctx.save();
-  ctx.translate(x, y);
-  ctx.rotate((dir - 1) * Math.PI / 2);
-  ctx.lineCap = 'round';
-  ctx.lineJoin = 'round';
-  const path = () => {
-    ctx.beginPath();
-    ctx.moveTo(-s * 0.22, -s * 0.36);
-    ctx.lineTo(s * 0.16, 0);
-    ctx.lineTo(-s * 0.22, s * 0.36);
-  };
-  path();
-  ctx.strokeStyle = outline;
-  ctx.lineWidth = Math.max(4, s * 0.3);
-  ctx.stroke();
-  path();
-  ctx.strokeStyle = color;
-  ctx.lineWidth = Math.max(2.4, s * 0.17);
-  ctx.stroke();
-  ctx.restore();
-}
-
 function round(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number) {
   ctx.beginPath();
   addRound(ctx, x, y, w, h, r);
+}
+
+function addCorners(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: [number, number, number, number]) {
+  const m = Math.min(w, h) / 2;
+  const [tl, tr, br, bl] = r.map((v) => Math.max(0, Math.min(v, m)));
+  ctx.moveTo(x + tl, y);
+  ctx.lineTo(x + w - tr, y);
+  if (tr) ctx.arcTo(x + w, y, x + w, y + tr, tr); else ctx.lineTo(x + w, y);
+  ctx.lineTo(x + w, y + h - br);
+  if (br) ctx.arcTo(x + w, y + h, x + w - br, y + h, br); else ctx.lineTo(x + w, y + h);
+  ctx.lineTo(x + bl, y + h);
+  if (bl) ctx.arcTo(x, y + h, x, y + h - bl, bl); else ctx.lineTo(x, y + h);
+  ctx.lineTo(x, y + tl);
+  if (tl) ctx.arcTo(x, y, x + tl, y, tl); else ctx.lineTo(x, y);
+  ctx.closePath();
 }
 
 function addRound(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number) {
