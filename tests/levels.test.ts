@@ -59,8 +59,10 @@ describe('generated levels', () => {
   });
 
   it('introduces obstacles on the way up, and breathes every fifth level', () => {
-    expect(levels.filter((l) => l.n < 8).every((l) => l.pieces.every((p) => p.ice === 0))).toBe(true);
-    expect(levels.some((l) => l.n >= 8 && l.n <= 24 && l.pieces.some((p) => p.ice > 0))).toBe(true);
+    expect(levels.filter((l) => l.n < 4).every((l) => l.pieces.every((p) => p.ice === 0))).toBe(true);
+    expect(levels.some((l) => l.n >= 4 && l.n <= 10 && l.pieces.some((p) => p.ice > 0))).toBe(true);
+    expect(levels.some((l) => l.n >= 6 && l.n <= 12 && l.gates.some((g) => g.ice > 0))).toBe(true);
+    expect(levels.some((l) => l.n >= 10 && l.n <= 20 && l.pieces.some((p) => p.lock > 0))).toBe(true);
     expect(levels.some((l) => l.variant === 'checker')).toBe(true);
     expect(levels.some((l) => l.variant === 'U')).toBe(true);
     expect(levels.some((l) => l.variant === 'chambers')).toBe(true);

@@ -339,8 +339,11 @@ function drawPiece(ctx: CanvasRenderingContext2D, g: Geom, frame: Frame, i: numb
       for (const sy of [0.27, 0.69]) stud(ctx, ox + (live.x + dx + sx) * cell, oy + (live.y + dy + sy) * cell, sr, face, col.deep);
     }
   }
-  const mx = ox + (live.x + (shape.w - 1) / 2) * cell + cell / 2;
-  const my = oy + (live.y + (shape.h - 1) / 2) * cell + cell / 2;
+  // Badges sit on the brick's own cell nearest its middle. The bounding-box
+  // center can fall outside an L or T, where another brick would cover it.
+  const [ax, ay] = anchorCell(shape.cells, shape.w, shape.h);
+  const mx = ox + (live.x + ax + 0.5) * cell;
+  const my = oy + (live.y + ay + 0.5) * cell;
   const frozen = frame.clears < p.ice;
   const locked = frame.keys < p.lock;
   if (frame.symbols && !frozen && !locked) {
@@ -356,6 +359,18 @@ function drawPiece(ctx: CanvasRenderingContext2D, g: Geom, frame: Frame, i: numb
   else if (locked) badge(ctx, mx, my, String(p.lock - frame.keys), '#ffe7a3', '#6a4a00', cell);
   ctx.restore();
   ctx.restore();
+}
+
+function anchorCell(cells: readonly (readonly [number, number])[], w: number, h: number): readonly [number, number] {
+  const cx = (w - 1) / 2;
+  const cy = (h - 1) / 2;
+  let best = cells[0];
+  let bestD = Infinity;
+  for (const c of cells) {
+    const d = (c[0] - cx) ** 2 + (c[1] - cy) ** 2;
+    if (d < bestD - 1e-9) { best = c; bestD = d; }
+  }
+  return best;
 }
 
 function iceOverlay(

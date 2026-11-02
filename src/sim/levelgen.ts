@@ -9,6 +9,7 @@ import { analyze } from './rules';
 import { hash32, Rng } from './rng';
 import { beamSolve, solve } from './solver';
 import { DOT, SHAPES } from './shapes';
+import { COLORS } from './types';
 import {
   DX,
   DY,
@@ -75,10 +76,11 @@ function clamp(n: number, lo: number, hi: number): number {
 export function paramsFor(n: number): Params {
   const breather = n % 5 === 0;
   const t = breather ? Math.max(1, n - 4) : n;
-  let pieces = clamp(Math.round(3 + 8 * (1 - Math.exp(-t / 110))), 3, 11);
+  let pieces = clamp(Math.round(3 + 8 * (1 - Math.exp(-t / 75))), 3, 11);
   if (breather) pieces = Math.max(3, pieces - 1);
   const variant = variantFor(n, breather);
-  let colors = variant === 'checker' ? 2 : clamp(1 + Math.floor((t - 1) / 12), 1, 5);
+  // One color for the first two levels, then a new color roughly every six levels, up to all six.
+  let colors = variant === 'checker' ? 2 : t <= 2 ? 1 : clamp(2 + Math.floor((t - 3) / 6), 2, COLORS.length);
   colors = Math.min(colors, pieces);
   return {
     pieces,
@@ -88,10 +90,10 @@ export function paramsFor(n: number): Params {
     maxPark: breather ? 1 : t < 12 ? 1 : t < 40 ? 2 : 3,
     minPark: breather || t < 6 ? 0 : 1,
     tuck: breather ? 0.12 : clamp(0.22 + t / 380, 0.22, 0.72),
-    ice: n >= 8,
-    iceGate: n >= 16,
-    locks: n >= 22 && (!breather || n >= 45),
-    room: variant === 'rect' && !breather && n >= 30 && n % 6 === 0,
+    ice: n >= 4,
+    iceGate: n >= 6,
+    locks: n >= 10 && (!breather || n >= 30),
+    room: variant === 'rect' && !breather && n >= 14 && n % 4 === 2,
     minSetups: breather ? 0 : t < 10 ? 0 : t < 24 ? 1 : t < 70 ? 2 : 3,
     nodes: 4000,
   };
@@ -573,15 +575,23 @@ function decorate(level: Level, witness: Move[], rng: Rng, params: Params): bool
   if (params.ice) {
     for (let i = 0; i < level.pieces.length; i++) {
       if (level.pieces[i].room >= 0 || level.pieces[i].lock > 0) continue;
-      if (firstClear[i] > 0 && rng.chance(0.5)) level.pieces[i].ice = firstClear[i];
+      if (firstClear[i] > 0 && rng.chance(iceChance(level.n))) level.pieces[i].ice = firstClear[i];
     }
   }
   if (params.iceGate) {
     for (let g = 0; g < level.gates.length; g++) {
-      if (gateFirst[g] > 0 && rng.chance(0.45)) level.gates[g].ice = gateFirst[g];
+      if (gateFirst[g] > 0 && rng.chance(iceChance(level.n) * 0.9)) level.gates[g].ice = gateFirst[g];
     }
   }
   return true;
+}
+
+/**
+ * Chance an eligible brick (or gate) starts frozen: 40% when ice arrives, 50% from level 20.
+ * Higher rates make late trays too tangled for the solver to confirm.
+ */
+function iceChance(n: number): number {
+  return clamp(0.4 + n / 200, 0.4, 0.5);
 }
 
 /** One locked brick, needing exactly the keys that have already left when it first moves. */
