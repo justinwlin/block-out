@@ -3,10 +3,10 @@
   --ink: #fff8ee;
   --muted: rgba(255, 248, 238, 0.72);
   --cream: #f4e7d0;
-  --wood: #6a4328;
-  --deep: #1a100c;
+  --wood: #3c4590;
+  --deep: #141833;
   --gold: #ffc43d;
-  --card: #2a1c14;
+  --card: #232a5c;
   font-family: Fredoka, "Avenir Next", "Segoe UI", sans-serif;
 }
 
@@ -122,11 +122,11 @@ button, input { font-family: inherit; }
   align-items: center;
   justify-content: center;
   padding: max(24px, env(safe-area-inset-top)) 20px max(24px, env(safe-area-inset-bottom));
-  background: rgba(18, 12, 9, 0.45);
+  background: rgba(10, 12, 32, 0.55);
   backdrop-filter: blur(8px);
   animation: rise 0.32s ease;
 }
-.screen.solid { background: radial-gradient(120% 80% at 50% 0%, #3a2618 0%, #1a100c 55%); }
+.screen.solid { background: radial-gradient(120% 80% at 50% 0%, #2c3478 0%, #141833 55%); }
 .screen.win::before {
   content: "";
   position: absolute;
@@ -173,7 +173,7 @@ button, input { font-family: inherit; }
     linear-gradient(#ff4d4d, #ff4d4d) 0 0 / 34px 34px no-repeat,
     linear-gradient(#3c7dff, #3c7dff) 28px 18px / 46px 22px no-repeat;
   border-radius: 10px;
-  filter: drop-shadow(0 8px 0 #6a4328);
+  filter: drop-shadow(0 8px 0 #3c4590);
 }
 .wordmark {
   font-size: 64px;

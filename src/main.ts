@@ -20,8 +20,11 @@ type Mode = 'title' | 'levels' | 'play' | 'pause' | 'win' | 'fail' | 'help' | 's
 type Boost = 'clock' | 'rocket' | 'ufo';
 
 interface Live {
+  /** Drawn position, eased toward tx/ty every frame. */
   x: number;
   y: number;
+  tx: number;
+  ty: number;
   out: boolean;
   lift: number;
   flash: number;
@@ -33,14 +36,27 @@ interface ExitAnim {
   t: number;
   x: number;
   y: number;
+  /** Cells to travel so the brick fully passes the tray edge. */
+  dist: number;
+  /** Seconds for the slide-out. */
+  dur: number;
 }
 interface Drag {
   i: number;
   pid: number;
-  sx: number;
-  sy: number;
-  axis: 'h' | 'v' | null;
-  off: number;
+  /** Grab point relative to the brick origin, in cells. */
+  gx: number;
+  gy: number;
+  /** Brick position in cells. One axis is always whole. */
+  px: number;
+  py: number;
+  /** Occupancy at grab time. Other bricks do not move during a drag. */
+  occ: Uint8Array;
+  /** Release velocity estimate, cells per second. */
+  vx: number;
+  vy: number;
+  t: number;
+  moved: boolean;
 }
 interface Session {
   level: Level;
@@ -111,6 +127,7 @@ function freshFrame(level: Level, live: Live[]): Frame {
     particles: [] as Particle[],
     texts: [] as Floater[],
     dragId: -1,
+    exitId: -1,
     hoverId: -1,
     symbols: save.settings.symbols,
     reduce: save.settings.reduceMotion,
@@ -131,7 +148,7 @@ function startLevel(n: number, resume = false) {
     sim.clears = snap.out.reduce((a, b) => a + (b ? 1 : 0), 0);
     sim.keys = level.pieces.reduce((a, p, i) => a + (snap.out[i] ? p.keys : 0), 0);
   }
-  const live = level.pieces.map((_, i) => ({ x: sim.x[i], y: sim.y[i], out: !!sim.out[i], lift: 0, flash: 0, squash: 0 }));
+  const live = level.pieces.map((_, i) => ({ x: sim.x[i], y: sim.y[i], tx: sim.x[i], ty: sim.y[i], out: !!sim.out[i], lift: 0, flash: 0, squash: 0 }));
   session = {
     level,
     sim,
@@ -154,16 +171,6 @@ function startLevel(n: number, resume = false) {
   mode = 'play';
   hintEl.textContent = level.hint;
   renderChrome();
-}
-
-function syncLive(s: Session) {
-  for (let i = 0; i < s.live.length; i++) {
-    if (s.exiting?.i === i || s.drag?.i === i) continue;
-    s.live[i].x = s.sim.x[i];
-    s.live[i].y = s.sim.y[i];
-    s.live[i].out = !!s.sim.out[i];
-    s.live[i].lift = 0;
-  }
 }
 
 function juice(kind: string) {
@@ -206,7 +213,7 @@ function noteChanges(s: Session, beforeClears: number, beforeKeys: number) {
 function finishExit(s: Session, i: number) {
   const beforeC = s.sim.clears;
   const beforeK = s.sim.keys;
-  const c = pieceCenter(s, i);
+  const c = gatePoint(s, i, s.exiting?.dir ?? 0);
   const col = paintColor(s.level, s.level.pieces[i].color);
   applyMove(s.level, s.sim, { i, dir: 0, dist: 1, exit: true });
   s.live[i].out = true;
@@ -219,32 +226,143 @@ function finishExit(s: Session, i: number) {
   if (won(s.level, s.sim)) onWin();
 }
 
-function beginExit(s: Session, i: number, dir: Dir) {
-  if (s.exiting || s.over) return;
-  const live = s.live[i];
-  s.drag = null;
-  s.exiting = { i, dir, t: 0, x: live.x, y: live.y };
+/** Where a leaving brick crosses the tray edge, in pixels. */
+function gatePoint(s: Session, i: number, dir: Dir): { x: number; y: number } {
+  const shape = SHAPES[s.level.pieces[i].shape];
+  const { cell, ox, oy } = s.geom;
+  const sx = s.sim.x[i];
+  const sy = s.sim.y[i];
+  let x = ox + (sx + shape.w / 2) * cell;
+  let y = oy + (sy + shape.h / 2) * cell;
+  if (dir === 0) y = oy;
+  if (dir === 2) y = oy + s.level.h * cell;
+  if (dir === 3) x = ox;
+  if (dir === 1) x = ox + s.level.w * cell;
+  return { x, y };
 }
 
-function slideBy(s: Session, i: number, dir: Dir, dist: number) {
-  if (dist < 1) return;
-  const a = analyze(s.level, s.sim, occupancy(s.level, s.sim), i, dir);
-  if (a.exitAt && dist >= a.exitAt) {
-    beginExit(s, i, dir);
-    return;
-  }
-  const use = Math.min(dist, a.max);
-  if (use < 1) {
-    s.live[i].flash = 1;
-    s.live[i].squash = 0.14;
-    juice('bump');
-    return;
-  }
-  applyMove(s.level, s.sim, { i, dir, dist: use, exit: false });
-  syncLive(s);
-  s.live[i].squash = 0.05;
+/** Start the slide-out from brick-cell (x, y), which is fully on the tray. */
+function beginExit(s: Session, i: number, dir: Dir, x: number, y: number, speed = 0) {
+  if (s.exiting || s.over) return;
+  const live = s.live[i];
+  const shape = SHAPES[s.level.pieces[i].shape];
+  s.drag = null;
+  s.sim.x[i] = x;
+  s.sim.y[i] = y;
+  const span = dir === 0 || dir === 2 ? shape.h : shape.w;
+  const from = dir === 0 || dir === 2 ? live.y : live.x;
+  const edge = dir === 0 || dir === 2 ? y : x;
+  const dist = span + Math.abs(edge - from) + 0.15;
+  // Carry the drag speed into the exit so the brick never slows down at the gate.
+  const dur = Math.max(0.14, Math.min(0.3, dist / Math.max(9, speed * 1.2)));
+  s.exiting = { i, dir, t: 0, x: live.x, y: live.y, dist, dur };
+  s.frame.exitId = i;
   audio.play('tick');
-  haptics.pulse(8);
+}
+
+/** Run `analyze` as if brick i sat at (cx, cy). */
+function reach(s: Session, d: Drag, cx: number, cy: number, dir: Dir) {
+  const ox0 = s.sim.x[d.i];
+  const oy0 = s.sim.y[d.i];
+  s.sim.x[d.i] = cx;
+  s.sim.y[d.i] = cy;
+  const a = analyze(s.level, s.sim, d.occ, d.i, dir);
+  s.sim.x[d.i] = ox0;
+  s.sim.y[d.i] = oy0;
+  return a;
+}
+
+const EPS = 1e-4;
+const whole = (v: number) => Math.abs(v - Math.round(v)) < EPS;
+
+/**
+ * Move the dragged brick toward (tx, ty) in cells, sliding along free lanes.
+ * The brick may turn a corner mid-drag once it lines up with a row or column.
+ * Returns true if the brick started leaving through a gate.
+ */
+function dragToward(s: Session, d: Drag, tx: number, ty: number): boolean {
+  for (let iter = 0; iter < 12; iter++) {
+    const dx = tx - d.px;
+    const dy = ty - d.py;
+    if (Math.abs(dx) < EPS && Math.abs(dy) < EPS) return false;
+    const fx = !whole(d.px);
+    const fy = !whole(d.py);
+    const wantH = Math.abs(dx) >= Math.abs(dy);
+    // Corner assist: the finger wants the other axis and the brick is close to a lane.
+    if (fx && !wantH && Math.abs(dy) > 0.2 && Math.abs(d.px - Math.round(d.px)) < 0.42) { d.px = Math.round(d.px); continue; }
+    if (fy && wantH && Math.abs(dx) > 0.2 && Math.abs(d.py - Math.round(d.py)) < 0.42) { d.py = Math.round(d.py); continue; }
+    const order: ('h' | 'v')[] = fx ? ['h'] : fy ? ['v'] : wantH ? ['h', 'v'] : ['v', 'h'];
+    let progressed = false;
+    for (const axis of order) {
+      const delta = axis === 'h' ? dx : dy;
+      if (Math.abs(delta) < EPS) continue;
+      const pos = axis === 'h' ? d.px : d.py;
+      const sign = delta > 0 ? 1 : -1;
+      const dir: Dir = axis === 'h' ? (sign > 0 ? 1 : 3) : (sign > 0 ? 2 : 0);
+      const base = sign > 0 ? Math.floor(pos + EPS) : Math.ceil(pos - EPS);
+      const cx = axis === 'h' ? base : Math.round(d.px);
+      const cy = axis === 'v' ? base : Math.round(d.py);
+      const a = reach(s, d, cx, cy, dir);
+      const travel = (pos + delta - base) * sign;
+      if (a.exitAt && travel >= a.exitAt - 1 + 0.3) {
+        const ex = axis === 'h' ? base + sign * (a.exitAt - 1) : cx;
+        const ey = axis === 'v' ? base + sign * (a.exitAt - 1) : cy;
+        const live = s.live[d.i];
+        live.x = live.tx = d.px;
+        live.y = live.ty = d.py;
+        beginExit(s, d.i, dir, ex, ey, Math.abs(axis === 'h' ? d.vx : d.vy));
+        return true;
+      }
+      const lim = a.exitAt ? a.exitAt - 1 + 0.3 : a.max;
+      const next = base + sign * Math.min(Math.max(travel, 0), lim);
+      if (Math.abs(next - pos) > EPS) {
+        if (axis === 'h') d.px = next; else d.py = next;
+        progressed = true;
+        break;
+      }
+    }
+    if (!progressed) return false;
+  }
+  return false;
+}
+
+/** Commit the drag: snap to the nearest cell, or glide on a flick. */
+function releaseDrag(s: Session, d: Drag) {
+  const live = s.live[d.i];
+  const speedX = Math.abs(d.vx);
+  const speedY = Math.abs(d.vy);
+  const flickH = whole(d.py) && speedX > 7 && speedX > speedY;
+  const flickV = whole(d.px) && speedY > 7 && speedY > speedX;
+  let nx = Math.round(d.px);
+  let ny = Math.round(d.py);
+  if (flickH || flickV) {
+    const sign = flickH ? Math.sign(d.vx) : Math.sign(d.vy);
+    const dir: Dir = flickH ? (sign > 0 ? 1 : 3) : (sign > 0 ? 2 : 0);
+    const pos = flickH ? d.px : d.py;
+    const base = sign > 0 ? Math.floor(pos + EPS) : Math.ceil(pos - EPS);
+    const cx = flickH ? base : nx;
+    const cy = flickV ? base : ny;
+    const a = reach(s, d, cx, cy, dir);
+    if (a.exitAt) {
+      const ex = flickH ? base + sign * (a.exitAt - 1) : cx;
+      const ey = flickV ? base + sign * (a.exitAt - 1) : cy;
+      live.tx = d.px;
+      live.ty = d.py;
+      beginExit(s, d.i, dir, ex, ey, flickH ? speedX : speedY);
+      return;
+    }
+    nx = flickH ? base + sign * a.max : nx;
+    ny = flickV ? base + sign * a.max : ny;
+  }
+  const changed = nx !== s.sim.x[d.i] || ny !== s.sim.y[d.i];
+  s.sim.x[d.i] = nx;
+  s.sim.y[d.i] = ny;
+  live.tx = nx;
+  live.ty = ny;
+  if (changed) {
+    audio.play('tick');
+    haptics.pulse(8);
+  }
 }
 
 function hitPiece(s: Session, px: number, py: number): number {
@@ -339,6 +457,10 @@ function fireAt(i: number) {
   if (won(s.level, s.sim)) onWin();
 }
 
+function cellPoint(s: Session, p: { x: number; y: number }) {
+  return { x: (p.x - s.geom.ox) / s.geom.cell, y: (p.y - s.geom.oy) / s.geom.cell };
+}
+
 function onPointerDown(ev: PointerEvent) {
   if (mode !== 'play' || !session || session.over || session.exiting) return;
   audio.unlock();
@@ -356,7 +478,11 @@ function onPointerDown(ev: PointerEvent) {
     s.live[i].squash = 0.14;
     return;
   }
-  s.drag = { i, pid: ev.pointerId, sx: p.x, sy: p.y, axis: null, off: 0 };
+  const c = cellPoint(s, p);
+  const px = s.sim.x[i];
+  const py = s.sim.y[i];
+  s.drag = { i, pid: ev.pointerId, gx: c.x - px, gy: c.y - py, px, py, occ: occupancy(s.level, s.sim), vx: 0, vy: 0, t: ev.timeStamp, moved: false };
+  s.live[i].lift = 4;
   canvas.setPointerCapture(ev.pointerId);
   audio.play('grab');
   haptics.pulse(8);
@@ -372,39 +498,41 @@ function onPointerMove(ev: PointerEvent) {
     canvas.style.cursor = hit >= 0 ? 'grab' : 'default';
     return;
   }
-  if (s.drag.pid !== ev.pointerId || s.exiting) return;
-  s.frame.hoverId = s.drag.i;
-  const dx = p.x - s.drag.sx;
-  const dy = p.y - s.drag.sy;
-  if (!s.drag.axis && Math.hypot(dx, dy) > 8) s.drag.axis = Math.abs(dx) > Math.abs(dy) ? 'h' : 'v';
-  if (!s.drag.axis) return;
-  const delta = (s.drag.axis === 'h' ? dx : dy) / s.geom.cell;
-  const dir: Dir = s.drag.axis === 'h' ? (delta >= 0 ? 1 : 3) : (delta >= 0 ? 2 : 0);
-  const a = analyze(s.level, s.sim, occupancy(s.level, s.sim), s.drag.i, dir);
-  const limit = a.exitAt || a.max;
-  const mag = Math.min(Math.abs(delta), limit);
-  s.drag.off = Math.sign(delta || 1) * mag;
-  const live = s.live[s.drag.i];
-  live.x = s.sim.x[s.drag.i] + (s.drag.axis === 'h' ? s.drag.off : 0);
-  live.y = s.sim.y[s.drag.i] + (s.drag.axis === 'v' ? s.drag.off : 0);
-  live.lift = 6;
-  if (a.exitAt && Math.abs(s.drag.off) >= a.exitAt - 0.12) beginExit(s, s.drag.i, dir);
+  const d = s.drag;
+  if (d.pid !== ev.pointerId || s.exiting) return;
+  s.frame.hoverId = d.i;
+  canvas.style.cursor = 'grabbing';
+  // Coalesced events give every sample the browser saw, so fast swipes don't skip past walls.
+  const events = ev.getCoalescedEvents?.() ?? [];
+  const samples = events.length ? events : [ev];
+  for (const e of samples) {
+    const c = cellPoint(s, localPoint(e));
+    const bx = d.px;
+    const by = d.py;
+    if (dragToward(s, d, c.x - d.gx, c.y - d.gy)) return;
+    const dt = Math.max(1, e.timeStamp - d.t) / 1000;
+    d.t = e.timeStamp;
+    // Smoothed velocity in cells per second, for flicks.
+    const k = Math.min(1, dt / 0.05);
+    d.vx += ((d.px - bx) / dt - d.vx) * k;
+    d.vy += ((d.py - by) / dt - d.vy) * k;
+    if (Math.abs(d.px - s.sim.x[d.i]) > 0.05 || Math.abs(d.py - s.sim.y[d.i]) > 0.05) d.moved = true;
+  }
+  const live = s.live[d.i];
+  live.tx = d.px;
+  live.ty = d.py;
 }
 
 function onPointerUp(ev: PointerEvent) {
   const s = session;
   if (!s?.drag || s.drag.pid !== ev.pointerId) return;
-  const drag = s.drag;
+  const d = s.drag;
   s.drag = null;
+  canvas.style.cursor = 'default';
   if (s.exiting) return;
-  if (!drag.axis) {
-    syncLive(s);
-    return;
-  }
-  const dir: Dir = drag.axis === 'h' ? (drag.off >= 0 ? 1 : 3) : (drag.off >= 0 ? 2 : 0);
-  const dist = Math.abs(Math.round(drag.off));
-  if (dist < 1) syncLive(s);
-  else slideBy(s, drag.i, dir, dist);
+  // A stale velocity from an earlier stop should not count as a flick.
+  if (ev.timeStamp - d.t > 60) { d.vx = 0; d.vy = 0; }
+  releaseDrag(s, d);
 }
 
 function snapshotOf(s: Session): Snapshot {
@@ -737,7 +865,17 @@ function loop(now: number) {
     s.frame.time += dt;
     s.hintFor -= dt;
     if (s.hintFor <= 0) hintEl.classList.add('hidden');
+    // Frame-rate independent easing toward each brick's target cell.
+    const follow = 1 - Math.exp(-dt * 38);
+    const settle = 1 - Math.exp(-dt * 22);
     s.live.forEach((live, i) => {
+      if (s.exiting?.i !== i) {
+        const k = s.drag?.i === i ? follow : settle;
+        live.x += (live.tx - live.x) * k;
+        live.y += (live.ty - live.y) * k;
+        if (Math.abs(live.tx - live.x) < 0.002) live.x = live.tx;
+        if (Math.abs(live.ty - live.y) < 0.002) live.y = live.ty;
+      }
       if (live.lift > 0 && s.drag?.i !== i) live.lift = Math.max(0, live.lift - dt * 30);
       live.flash = Math.max(0, live.flash - dt * 2.4);
       live.squash *= Math.exp(-dt * 7);
@@ -747,13 +885,17 @@ function loop(now: number) {
     s.timeLeft = clock.timeLeft;
     s.freeze = clock.freeze;
     if (s.exiting) {
-      s.exiting.t += dt / 0.38;
-      const k = Math.min(1, s.exiting.t);
-      const ease = 1 - (1 - k) ** 3;
-      s.live[s.exiting.i].x = s.exiting.x + DX[s.exiting.dir] * ease * 0.7;
-      s.live[s.exiting.i].y = s.exiting.y + DY[s.exiting.dir] * ease * 0.7;
-      s.live[s.exiting.i].squash = (1 - k) * 0.08;
-      if (k >= 1 && s.exiting) finishExit(s, s.exiting.i);
+      const ex = s.exiting;
+      ex.t += dt / ex.dur;
+      const k = Math.min(1, ex.t);
+      // Slight ease-in: the brick accelerates into the gate.
+      const ease = k * (0.6 + 0.4 * k);
+      s.live[ex.i].x = ex.x + DX[ex.dir] * ease * ex.dist;
+      s.live[ex.i].y = ex.y + DY[ex.dir] * ease * ex.dist;
+      if (k >= 1) {
+        finishExit(s, ex.i);
+        s.frame.exitId = -1;
+      }
     }
     if (clock.failed && !s.over) onFail();
     stepFx(s.frame, dt);
@@ -770,7 +912,7 @@ function loop(now: number) {
     render(ctx, s.geom, s.frame);
     if (mode === 'play') paintHud();
   } else {
-    ctx.fillStyle = '#1a100c';
+    ctx.fillStyle = '#141833';
     ctx.fillRect(0, 0, window.innerWidth, window.innerHeight);
   }
   requestAnimationFrame(loop);
