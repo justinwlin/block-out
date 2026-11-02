@@ -1,7 +1,7 @@
 // Forward solver. Free exits are taken at once (they only help), then A*
-// searches the setup slides. Heuristic = bricks still out on the tray.
+// searches the setup slides. Heuristic: bricks left, plus one for each brick off any gate line.
 
-import { analyze, applyMove, canMove, cloneState, legalMoves, makeState, occupancy, stateKey, takeFreeExits, won } from './rules';
+import { analyze, applyMove, canMove, cloneState, dirAllowed, legalMoves, makeState, occupancy, stateKey, takeFreeExits, won } from './rules';
 import { SHAPES } from './shapes';
 import { type Dir, type Level, type Move, type SimState } from './types';
 
@@ -116,7 +116,7 @@ export function beamSolve(level: Level, width = 36, depthLimit = 7): SolveResult
   takeFreeExits(level, start, prefix);
   if (won(level, start)) return finish(level, prefix, 1);
   let layer: { s: SimState; moves: Move[] }[] = [{ s: start, moves: [...prefix] }];
-  const seen = new Set<bigint>([stateKey(start)]);
+  const seen = new Set<string>([stateKey(start)]);
   for (let depth = 0; depth < depthLimit && layer.length; depth++) {
     const next: { s: SimState; moves: Move[]; left: number }[] = [];
     for (const node of layer) {
@@ -130,7 +130,7 @@ export function beamSolve(level: Level, width = 36, depthLimit = 7): SolveResult
         seen.add(k);
         const moves = node.moves.concat(edge);
         if (won(level, s2)) return { ...finish(level, moves, seen.size), optimal: false };
-        next.push({ s: s2, moves, left: remaining(s2) });
+        next.push({ s: s2, moves, left: remaining(level, s2) });
       }
     }
     next.sort((a, b) => a.left - b.left || a.moves.length - b.moves.length);
@@ -139,9 +139,27 @@ export function beamSolve(level: Level, width = 36, depthLimit = 7): SolveResult
   return null;
 }
 
-function remaining(s: SimState): number {
+/**
+ * Lower bound on moves left: one exit per brick still in play, plus one slide for every
+ * brick not lined up with any gate of its current color in a direction it may move.
+ * A brick can only change line or color by sliding, so the bound never overshoots and
+ * A* still returns shortest solutions. Ice and closed gates are ignored, which keeps it safe.
+ */
+function remaining(level: Level, s: SimState): number {
   let n = 0;
-  for (let i = 0; i < s.out.length; i++) if (!s.out[i]) n++;
+  for (let i = 0; i < s.out.length; i++) {
+    if (s.out[i]) continue;
+    n++;
+    const shape = SHAPES[level.pieces[i].shape];
+    let lined = false;
+    for (let g = 0; g < level.gates.length && !lined; g++) {
+      const gate = level.gates[g];
+      if (gate.color !== s.color[i] || !dirAllowed(level, i, gate.dir)) continue;
+      const vertical = gate.dir === 0 || gate.dir === 2;
+      if (gate.span === (vertical ? shape.w : shape.h) && gate.along === (vertical ? s.x[i] : s.y[i])) lined = true;
+    }
+    if (!lined) n++;
+  }
   return n;
 }
 
@@ -160,11 +178,11 @@ export function solve(level: Level, nodeLimit = 4000, timeLimitMs = 30): SolveRe
   if (won(level, start)) return finish(level, prefix, 1);
 
   const nodes: Node[] = [{ s: start, g: prefix.length, parent: -1, edge: [] }];
-  const best = new Map<bigint, number>();
+  const best = new Map<string, number>();
   best.set(stateKey(start), prefix.length);
   const heap = new Heap();
-  heap.push(prefix.length + remaining(start), prefix.length, 0);
-  const closed = new Set<bigint>();
+  heap.push(prefix.length + remaining(level, start), prefix.length, 0);
+  const closed = new Set<string>();
   let expanded = 0;
   let goalId = -1;
   let goalG = Infinity;
@@ -204,7 +222,7 @@ export function solve(level: Level, nodeLimit = 4000, timeLimitMs = 30): SolveRe
         goalG = g;
         continue;
       }
-      heap.push(g + remaining(next), g, id);
+      heap.push(g + remaining(level, next), g, id);
     }
   }
   if (goalId >= 0) return { ...finish(level, pathOf(nodes, goalId, prefix), expanded), optimal: proved };

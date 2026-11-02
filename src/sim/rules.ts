@@ -75,32 +75,78 @@ export function canMove(level: Level, s: SimState, i: number): boolean {
   return true;
 }
 
+/** Floor and closed-room cells for each combination of open rooms. Room geometry never changes. */
+const baseCache = new WeakMap<Level, Map<number, Uint8Array>>();
+
+function baseGrid(level: Level, clears: number): Uint8Array {
+  let mask = 0;
+  for (let r = 0; r < level.rooms.length; r++) if (!roomOpen(level, r, clears)) mask |= 1 << r;
+  let byMask = baseCache.get(level);
+  if (!byMask) {
+    byMask = new Map();
+    baseCache.set(level, byMask);
+  }
+  let grid = byMask.get(mask);
+  if (!grid) {
+    const { w, h } = level;
+    grid = new Uint8Array(w * h);
+    for (let i = 0; i < w * h; i++) if (!level.floor[i]) grid[i] = 255;
+    for (let r = 0; r < level.rooms.length; r++) {
+      if (!(mask & (1 << r))) continue;
+      const room = level.rooms[r];
+      for (let y = room.y; y < room.y + room.h; y++) for (let x = room.x; x < room.x + room.w; x++) grid[y * w + x] = 255;
+    }
+    byMask.set(mask, grid);
+  }
+  return grid;
+}
+
 /** 0 free, 255 solid, otherwise piece index + 1. The moving piece is not solid to itself. */
 export function occupancy(level: Level, s: SimState): Uint8Array {
-  const { w, h } = level;
-  const o = new Uint8Array(w * h);
-  for (let y = 0; y < h; y++) {
-    for (let x = 0; x < w; x++) {
-      const i = y * w + x;
-      if (!level.floor[i]) {
-        o[i] = 255;
-        continue;
-      }
-      for (let r = 0; r < level.rooms.length; r++) {
-        const room = level.rooms[r];
-        if (x >= room.x && x < room.x + room.w && y >= room.y && y < room.y + room.h && !roomOpen(level, r, s.clears)) {
-          o[i] = 255;
-          break;
-        }
-      }
-    }
-  }
+  const { w } = level;
+  const o = baseGrid(level, s.clears).slice();
   for (let i = 0; i < level.pieces.length; i++) {
     if (!pieceActive(level, s, i)) continue;
-    const shape = SHAPES[level.pieces[i].shape];
-    for (const [dx, dy] of shape.cells) o[(s.y[i] + dy) * w + (s.x[i] + dx)] = i + 1;
+    const cells = SHAPES[level.pieces[i].shape].cells;
+    const base = s.y[i] * w + s.x[i];
+    for (let c = 0; c < cells.length; c++) o[base + cells[c][1] * w + cells[c][0]] = i + 1;
   }
   return o;
+}
+
+/**
+ * Cells on a shape's leading edge for each direction: the only cells that can hit
+ * something new on a one-step slide. The rest move into cells the shape just left.
+ */
+const leadCache: Int8Array[][] = [];
+
+function leading(shapeId: number, dir: Dir): Int8Array {
+  let byDir = leadCache[shapeId];
+  if (!byDir) {
+    const cells = SHAPES[shapeId].cells;
+    const has = new Set(cells.map(([x, y]) => `${x},${y}`));
+    byDir = [0, 1, 2, 3].map((d) => {
+      const out: number[] = [];
+      for (const [x, y] of cells) if (!has.has(`${x + DX[d]},${y + DY[d]}`)) out.push(x, y);
+      return Int8Array.from(out);
+    });
+    leadCache[shapeId] = byDir;
+  }
+  return byDir[dir];
+}
+
+/** True if some open gate of the brick's color and width lines up with the brick going `dir`. */
+function lined(level: Level, s: SimState, piece: number, dir: Dir): boolean {
+  const shape = SHAPES[level.pieces[piece].shape];
+  const vertical = dir === 0 || dir === 2;
+  const span = vertical ? shape.w : shape.h;
+  const along = vertical ? s.x[piece] : s.y[piece];
+  const color = s.color[piece];
+  for (let g = 0; g < level.gates.length; g++) {
+    const gate = level.gates[g];
+    if (gate.dir === dir && gate.along === along && gate.span === span && gate.color === color && s.clears >= gate.ice && !gateClosed(level, s, g)) return true;
+  }
+  return false;
 }
 
 /** Index of the open gate a brick at (x, y) would leave through going `dir`, or -1. */
@@ -125,23 +171,24 @@ export function gateFor(level: Level, s: SimState, piece: number, dir: Dir, x: n
  */
 export function analyze(level: Level, s: SimState, occ: Uint8Array, piece: number, dir: Dir): { max: number; exitAt: number } {
   if (!dirAllowed(level, piece, dir)) return { max: 0, exitAt: 0 };
-  const shape = SHAPES[level.pieces[piece].shape];
+  const lead = leading(level.pieces[piece].shape, dir);
   const { w, h } = level;
+  const self = piece + 1;
   let max = 0;
   for (let step = 1; step <= w + h; step++) {
     const nx = s.x[piece] + DX[dir] * step;
     const ny = s.y[piece] + DY[dir] * step;
     let anyOut = false;
     let blocked = false;
-    for (const [dx, dy] of shape.cells) {
-      const cx = nx + dx;
-      const cy = ny + dy;
+    for (let k = 0; k < lead.length; k += 2) {
+      const cx = nx + lead[k];
+      const cy = ny + lead[k + 1];
       if (cx < 0 || cy < 0 || cx >= w || cy >= h) {
         anyOut = true;
         continue;
       }
       const v = occ[cy * w + cx];
-      if (v !== 0 && v !== piece + 1) {
+      if (v !== 0 && v !== self) {
         blocked = true;
         break;
       }
@@ -194,6 +241,8 @@ export function takeFreeExits(level: Level, s: SimState, into?: Move[]): number 
     for (let i = 0; i < level.pieces.length && !move; i++) {
       if (!canMove(level, s, i)) continue;
       for (let dir = 0 as Dir; dir < 4; dir++) {
+        // Cheap filter first: an exit needs a gate in line with the brick.
+        if (!lined(level, s, i, dir)) continue;
         const a = analyze(level, s, occ, i, dir);
         if (a.exitAt) {
           move = { i, dir, dist: a.exitAt, exit: true };
@@ -221,12 +270,12 @@ export function replay(level: Level, moves: readonly Move[]): boolean {
   return won(level, s);
 }
 
-export function stateKey(s: SimState): bigint {
-  let k = 0n;
+/** Hashable position: one char per brick (color, x, y, or gone) plus one per gate pass count. */
+export function stateKey(s: SimState): string {
+  let k = '';
   for (let i = 0; i < s.x.length; i++) {
-    const packed = s.out[i] ? 0xfff : ((s.color[i] & 7) << 8) | ((s.x[i] & 15) << 4) | (s.y[i] & 15);
-    k = (k << 12n) | BigInt(packed);
+    k += String.fromCharCode(s.out[i] ? 0xffff : ((s.color[i] & 7) << 8) | ((s.x[i] & 15) << 4) | (s.y[i] & 15));
   }
-  for (let g = 0; g < s.passed.length; g++) k = (k << 3n) | BigInt(s.passed[g] & 7);
+  for (let g = 0; g < s.passed.length; g++) k += String.fromCharCode(48 + s.passed[g]);
   return k;
 }

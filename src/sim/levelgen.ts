@@ -7,7 +7,7 @@ import { difficultyScore, playerSeconds } from './economy';
 import { applyMove, gateFor, makeState, occupancy, replay } from './rules';
 import { analyze } from './rules';
 import { hash32, Rng } from './rng';
-import { beamSolve, solve } from './solver';
+import { beamSolve, solve, type SolveResult } from './solver';
 import { DOT, SHAPES } from './shapes';
 import { COLORS } from './types';
 import {
@@ -24,7 +24,7 @@ import {
   type Variant,
 } from './types';
 
-export const GEN_VERSION = 3;
+export const GEN_VERSION = 4;
 
 const cache = new Map<number, { level: Level; witness: Move[] }>();
 
@@ -89,7 +89,9 @@ export function paramsFor(n: number): Params {
   const t = breather ? Math.max(1, n - 4) : n;
   let pieces = clamp(Math.round(3 + 8 * (1 - Math.exp(-t / 95))), 3, 11);
   if (breather) pieces = Math.max(3, pieces - 1);
-  if (milestone) pieces = Math.min(11, pieces + 2);
+  // Late game: one more brick from level 350, so difficulty keeps climbing past the curve's top.
+  if (t >= 350 && !breather) pieces = 12;
+  if (milestone) pieces = Math.min(12, pieces + 2);
   const variant = variantFor(n, breather);
   // One color for the first two levels, then a new color roughly every six levels, up to all six.
   let colors = variant === 'checker' ? 2 : t <= 2 ? 1 : clamp(2 + Math.floor((t - 3) / 6), 2, COLORS.length);
@@ -107,7 +109,7 @@ export function paramsFor(n: number): Params {
     locks: n >= 10 && (!breather || n >= 30),
     room: variant === 'rect' && !breather && n >= 14 && n % 4 === 2,
     minSetups: (breather ? 0 : t < 10 ? 0 : t < 24 ? 1 : t < 70 ? 2 : t < 250 ? 3 : 4) + (milestone ? 2 : 0),
-    nodes: 4000,
+    nodes: 12000,
     milestone,
     pillars: variant === 'rect' && !breather && n >= 5 && n % 3 !== 1 ? clamp(1 + Math.floor((n - 5) / 20), 1, 3) : 0,
     oneWay: n >= 8 && variant !== 'packed' ? clamp(0.25 + n / 800, 0.25, 0.6) : 0,
@@ -141,6 +143,7 @@ function boardFor(pieces: number, variant: Variant): { w: number; h: number } {
     9: [6, 7],
     10: [6, 7],
     11: [7, 7],
+    12: [7, 7],
   };
   const [w, h] = span[pieces] ?? [8, 9];
   return { w, h };
@@ -158,34 +161,52 @@ interface Draft {
 function build(n: number): { level: Level; witness: Move[] } {
   const params = paramsFor(n);
   const rng = new Rng(hash32(`block-out:${GEN_VERSION}:${n}`));
-  let best: Draft | null = null;
-  let bestScore = -Infinity;
+  const pool: { draft: Draft; quick: SolveResult; score: number }[] = [];
   const fail = { build: 0, witness: 0, solve: 0, timer: 0 };
   const attempts = params.breather ? 6 : params.milestone ? 16 : params.variant === 'packed' ? 12 : 10;
   for (let attempt = 0; attempt < attempts; attempt++) {
-    const draft = params.variant === 'packed' ? tryPacked(n, params, rng) : tryBuild(n, params, rng);
+    const draft = params.variant === 'packed' ? tryPacked(n, params, rng, attempt >= attempts / 2) : tryBuild(n, params, rng);
     if (!draft) { fail.build++; continue; }
     if (!replay(draft.level, draft.witness)) { fail.witness++; continue; }
-    // Detours through paint and milestone trays need a deeper search.
-    const deep = params.milestone || params.paint >= 2 || params.variant === 'packed';
-    const beam = beamSolve(draft.level, deep ? 48 : 36, deep ? 11 : 7);
-    const exact = beam?.solved ? solve(draft.level, params.nodes, 20) : null;
-    const solved = exact?.solved ? exact : beam;
-    if (!solved?.solved || !replay(draft.level, solved.moves)) { fail.solve++; continue; }
-    const metrics = metricsOf(draft.level, draft.witness, solved);
-    const timer = chooseTimer(n, params.breather, metrics);
-    if (playerSeconds(n, metrics) + 0.5 >= timer) { fail.timer++; continue; }
-    const level = finish(draft.level, metrics, timer, params);
-    const candidate = { level, witness: draft.witness };
-    // Keep the hardest candidate. Meeting the setup target outranks raw score.
-    const score = difficultyScore(metrics) + (metrics.setups >= params.minSetups ? 1000 : 0);
-    if (!best || score > bestScore) { best = candidate; bestScore = score; }
+    const quick = quickSolve(draft.level, params);
+    if (!quick) { fail.solve++; continue; }
+    const metrics = metricsOf(draft.level, draft.witness, quick);
+    if (playerSeconds(n, metrics) + 0.5 >= chooseTimer(n, params.breather, metrics)) { fail.timer++; continue; }
+    // Meeting the setup target outranks raw score.
+    pool.push({ draft, quick, score: difficultyScore(metrics) + (metrics.setups >= params.minSetups ? 1000 : 0) });
     // Warmups stop at the first acceptable tray; everything else tries every attempt.
     if (params.breather && metrics.setups >= params.minSetups) break;
   }
-  if (best) return best;
-  if (process.env.GEN_DEBUG) console.log('fallback', n, fail, params);
-  return fallback(n, params);
+  if (!pool.length) {
+    if (typeof process !== 'undefined' && process.env?.GEN_DEBUG) console.log('fallback', n, fail, params);
+    return fallback(n, params);
+  }
+  // The beam ranks every candidate; the exact solver re-measures the top three and picks.
+  // Node-limited, never time-limited: level N must come out the same on every device.
+  pool.sort((a, b) => b.score - a.score);
+  let best: { level: Level; witness: Move[]; score: number } | null = null;
+  // Full trays have huge position counts: re-measure only the top one, on a smaller budget.
+  const packed = params.variant === 'packed';
+  for (const { draft, quick } of pool.slice(0, packed ? 1 : 3)) {
+    const exact = solve(draft.level, packed ? 4000 : params.nodes, Infinity);
+    const solved = exact.solved && exact.minMoves <= quick.minMoves && replay(draft.level, exact.moves) ? exact : quick;
+    const metrics = metricsOf(draft.level, draft.witness, solved);
+    const timer = chooseTimer(n, params.breather, metrics);
+    if (playerSeconds(n, metrics) + 0.5 >= timer) continue;
+    const score = difficultyScore(metrics) + (metrics.setups >= params.minSetups ? 1000 : 0);
+    if (!best || score > best.score) {
+      best = { level: finish(draft.level, metrics, timer, params), witness: draft.witness, score };
+    }
+  }
+  if (!best) return fallback(n, params);
+  return { level: best.level, witness: best.witness };
+}
+
+/** Beam search for ranking; a tray the beam cannot clear is dropped and the next attempt runs. */
+function quickSolve(level: Level, params: Params): SolveResult | null {
+  const deep = params.milestone || params.paint >= 2 || params.variant === 'packed';
+  const beam = beamSolve(level, deep ? 48 : 36, deep ? 11 : 7);
+  return beam?.solved && replay(level, beam.moves) ? beam : null;
 }
 
 function metricsOf(level: Level, witness: Move[], solved: ReturnType<typeof solve>): Metrics {
@@ -742,8 +763,11 @@ function limitGates(level: Level, witness: Move[], rng: Rng) {
  * (sometimes offset so it has to slide first), and keep it only if the solver clears it.
  * The solver's line becomes the witness.
  */
-function tryPacked(n: number, params: Params, rng: Rng): Draft | null {
-  const [w, h] = n < 40 ? [4, 5] : n < 100 ? [5, 5] : n < 200 ? [5, 6] : [6, 6];
+function tryPacked(n: number, params: Params, rng: Rng, smaller = false): Draft | null {
+  const sizes: [number, number][] = [[4, 4], [4, 5], [5, 5], [5, 6], [6, 6]];
+  const target = n < 40 ? 1 : n < 100 ? 2 : n < 200 ? 3 : 4;
+  // Later attempts step down a size when the full tray will not come together.
+  const [w, h] = sizes[smaller ? target - 1 : target];
   const floor = new Uint8Array(w * h).fill(1);
   const level: Level = {
     n, w, h, floor, gates: [], pieces: [], rooms: [], timer: 60, label: 'Normal',
@@ -766,7 +790,8 @@ function tryPacked(n: number, params: Params, rng: Rng): Draft | null {
       if (!sh.cells.every(([dx, dy]) => grid[(oy + dy) * w + ox + dx] < 0)) continue;
       const idx = level.pieces.length;
       for (const [dx, dy] of sh.cells) grid[(oy + dy) * w + ox + dx] = idx;
-      level.pieces.push({ shape: id, color: rng.int(0, params.colors), x: ox, y: oy, ice: 0, lock: 0, keys: 0, room: -1 });
+      // At most four colors, so bricks can share gates and the edges have room for them all.
+      level.pieces.push({ shape: id, color: rng.int(0, Math.min(4, params.colors)), x: ox, y: oy, ice: 0, lock: 0, keys: 0, room: -1 });
       placed = true;
     }
     if (!placed) return null;
