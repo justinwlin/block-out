@@ -153,8 +153,60 @@ function freshFrame(level: Level, live: Live[], sim: SimState): Frame {
   };
 }
 
+/** Finished levels from the worker, and requests still in flight. */
+const built = new Map<number, Level>();
+const waiting = new Map<number, ((level: Level) => void)[]>();
+let worker: Worker | null = null;
+try {
+  worker = new Worker(new URL('./gen.worker.ts', import.meta.url), { type: 'module' });
+  worker.onmessage = (e: MessageEvent<{ n: number; level: Level }>) => {
+    built.set(e.data.n, e.data.level);
+    for (const done of waiting.get(e.data.n) ?? []) done(e.data.level);
+    waiting.delete(e.data.n);
+  };
+  worker.onerror = () => {
+    worker = null;
+  };
+} catch {
+  worker = null;
+}
+
+/** Ask the worker for a level. Without a worker, build it here. */
+function requestLevel(n: number): Promise<Level> {
+  const have = built.get(n);
+  if (have) return Promise.resolve(have);
+  if (!worker) {
+    const level = generateLevel(n);
+    built.set(n, level);
+    return Promise.resolve(level);
+  }
+  return new Promise((resolve) => {
+    const list = waiting.get(n);
+    if (list) list.push(resolve);
+    else {
+      waiting.set(n, [resolve]);
+      worker!.postMessage(n);
+    }
+  });
+}
+
+let startToken = 0;
+
 function startLevel(n: number, resume = false) {
-  const level = generateLevel(n);
+  const token = ++startToken;
+  const ready = built.get(n);
+  if (ready) return beginLevel(ready, resume);
+  // Not built yet: show a card, and start when the worker is done unless the player moved on.
+  const card = el(`<div class="screen solid"><div class="card panel"><p class="eyebrow">Level ${n}</p><h1 class="sheet-title">Building level</h1><p class="sub">Searching for a good one.</p></div></div>`);
+  screens.innerHTML = '';
+  screens.append(card);
+  void requestLevel(n).then((level) => {
+    if (token === startToken && card.isConnected) beginLevel(level, resume);
+  });
+}
+
+function beginLevel(level: Level, resume: boolean) {
+  const n = level.n;
   const sim = makeState(level);
   const snap = resume ? save.snapshot : null;
   if (snap && snap.n === n && snap.x.length === level.pieces.length) {
@@ -191,8 +243,8 @@ function startLevel(n: number, resume = false) {
   mode = 'play';
   hintEl.textContent = level.hint;
   renderChrome();
-  // Build the next level in the background so "Next" opens instantly.
-  setTimeout(() => generateLevel(n + 1), 900);
+  // Build the next level in the worker so "Next" opens instantly.
+  void requestLevel(n + 1);
 }
 
 function juice(kind: string) {
@@ -714,7 +766,7 @@ function helpScreen() {
     <h1 class="sheet-title">How to play</h1>
     <div class="help">
       <p><b>Drag</b> a brick along a row or column, around corners too. It stops when it hits something.</p>
-      <p>Line it up with a <b>gate of its color</b> that it fits, and drag it out.</p>
+      <p>Line it up with a <b>gate of its color</b> that is as wide as the brick or wider, and drag it out.</p>
       <p><b>Ice</b> (blue, with a snowflake) thaws after that many bricks have left. Frozen gates work the same way.</p>
       <p>A brick with a <b>key</b> unlocks <b>padlocked</b> bricks when it leaves. The padlock shows how many keys it still needs.</p>
       <p><b>Arrows</b> on a brick mean it only slides that way. <b>Dots</b> on a gate count how many more bricks it lets through, so spend them on the right bricks. <b>Trap</b> levels hide an easy exit that strands another brick. A brick that stops on a <b>paint</b> splash turns that color. A <b>shutter</b> lifts when its count reaches zero.</p>

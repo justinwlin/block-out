@@ -4,10 +4,12 @@
 
 import { deadEndRatio } from './bots';
 import { difficultyScore, playerSeconds } from './economy';
-import { applyMove, canMove, cloneState, dirAllowed, gateFor, makeState, occupancy, replay, stranded } from './rules';
+import { applyMove, canMove, cloneState, dirAllowed, fitsGate, gateFor, makeState, occupancy, replay, stranded } from './rules';
 import { analyze } from './rules';
 import { hash32, Rng } from './rng';
 import { beamSolve, solve, type SolveResult } from './solver';
+import { chainStats, depthOf, type Depth } from './depth';
+import { hardStarts, withStart } from './reselect';
 import { DOT, SHAPES } from './shapes';
 import { COLORS } from './types';
 import {
@@ -24,7 +26,7 @@ import {
   type Variant,
 } from './types';
 
-export const GEN_VERSION = 6;
+export const GEN_VERSION = 7;
 
 const cache = new Map<number, { level: Level; witness: Move[] }>();
 
@@ -85,13 +87,23 @@ function clamp(n: number, lo: number, hi: number): number {
   return Math.max(lo, Math.min(hi, n));
 }
 
+/**
+ * Difficulty tier. Levels 1-3 teach the rules; from level 4 the puzzle knobs start where
+ * level 204 used to be and keep climbing. Mechanics still arrive one at a time by level.
+ */
+export function tierOf(n: number): number {
+  return n <= 3 ? n : n + 200;
+}
+
 export function paramsFor(n: number): Params {
   const milestone = n >= 25 && n % 25 === 0;
-  const breather = n % 5 === 0 && !milestone;
-  const t = breather ? Math.max(1, n - 4) : n;
+  // A lighter tray every tenth level: still hard, just a step back from its neighbors.
+  const breather = n % 10 === 5 && !milestone;
+  const d = tierOf(n);
+  const t = breather ? Math.max(1, d - 40) : d;
   let pieces = clamp(Math.round(3 + 8 * (1 - Math.exp(-t / 70))), 3, 11);
   if (breather) pieces = Math.max(3, pieces - 1);
-  // Late game: one more brick from level 250, so difficulty keeps climbing past the curve's top.
+  // One more brick from tier 250 and 400, so difficulty keeps climbing past the curve top.
   if (t >= 250 && !breather) pieces = 12;
   if (t >= 400 && !breather) pieces = 13;
   if (milestone) pieces = Math.min(13, pieces + 2);
@@ -110,16 +122,17 @@ export function paramsFor(n: number): Params {
     minPark: breather || t < 6 ? 0 : 1,
     tuck: breather ? 0.12 : clamp(0.22 + t / 380, 0.22, 0.72),
     ice: n >= 4,
-    iceGate: n >= 6,
-    locks: n >= 10 && (!breather || n >= 30),
+    iceGate: n >= 5,
+    locks: n >= 7 && (!breather || n >= 30),
     room: variant === 'rect' && !breather && n >= 14 && n % 4 === 2,
-    minSetups: (breather ? 0 : t < 10 ? 0 : t < 24 ? 1 : t < 70 ? 2 : t < 250 ? 3 : t < 400 ? 4 : 5) + (milestone ? 2 : 0),
+    minSetups: (t < 10 ? 0 : t < 24 ? 1 : t < 70 ? 2 : t < 250 ? 3 : t < 400 ? 4 : 5) + (milestone ? 2 : 0),
     nodes: 20000,
     milestone,
-    pillars: variant === 'rect' && !breather && n >= 5 && n % 3 !== 1 ? clamp(1 + Math.floor((n - 5) / 20), 1, 3) : 0,
-    oneWay: n >= 8 && variant !== 'packed' ? clamp(0.25 + n / 800, 0.25, 0.6) : 0,
-    limitGates: (n >= 12 && variant !== 'packed') || trap,
-    paint: n >= 16 && colors >= 2 && variant !== 'checker' && variant !== 'packed' ? (n >= 60 && !breather ? 2 : 1) : 0,
+    // Pillars turn an open tray into corridors, which is where the planning comes from.
+    pillars: variant === 'rect' && !breather && n >= 5 ? clamp(1 + Math.floor((d - 5) / 20), 1, 5) : 0,
+    oneWay: n >= 6 && variant !== 'packed' ? clamp(0.25 + d / 800, 0.25, 0.6) : 0,
+    limitGates: (n >= 8 && variant !== 'packed') || trap,
+    paint: n >= 10 && colors >= 2 && variant !== 'checker' && variant !== 'packed' ? (n >= 20 && !breather ? 2 : 1) : 0,
     trap,
   };
 }
@@ -129,8 +142,9 @@ function variantFor(n: number, breather: boolean): Variant {
   if (n >= 9 && n % 10 === 9) return 'checker';
   // Packed: every brick starts on the board with no empty cells.
   if (n >= 7 && n % 10 === 7) return 'packed';
-  if (!breather && n >= 18 && n % 9 === 0) return 'chambers';
-  if (!breather && n >= 14 && n % 7 === 0) return 'U';
+  // Narrow trays (U, stacked chambers) measure deepest, so they come up three times in ten.
+  if (!breather && n >= 8 && (n % 10 === 2 || n % 10 === 8)) return 'U';
+  if (!breather && n >= 14 && n % 10 === 4) return 'chambers';
   return 'rect';
 }
 
@@ -152,7 +166,8 @@ function boardFor(pieces: number, variant: Variant): { w: number; h: number } {
     12: [7, 7],
     13: [7, 8],
   };
-  const [w, h] = span[pieces] ?? [8, 9];
+  // Rect trays run two sizes tighter: less free floor, more bricks in each other's way.
+  const [w, h] = span[variant === 'rect' ? Math.max(3, pieces - 2) : pieces] ?? [8, 9];
   return { w, h };
 }
 
@@ -171,7 +186,7 @@ function build(n: number, override?: Partial<Params>): { level: Level; witness: 
   const pool: { draft: Draft; quick: SolveResult; score: number }[] = [];
   const fail = { build: 0, witness: 0, solve: 0, timer: 0 };
   // More candidates later in the campaign, so the hardest pick keeps getting harder.
-  const attempts = params.breather ? 6 : params.milestone || params.trap ? 16 : params.variant === 'packed' ? 12 : Math.min(16, 10 + Math.floor(n / 100));
+  const attempts = params.breather ? 6 : params.milestone || params.trap ? 16 : params.variant === 'packed' ? 12 : Math.min(16, 10 + Math.floor(tierOf(n) / 100));
   for (let attempt = 0; attempt < attempts; attempt++) {
     const draft = params.variant === 'packed' ? tryPacked(n, params, rng, attempt >= attempts / 2) : tryBuild(n, params, rng);
     if (!draft) { fail.build++; continue; }
@@ -183,7 +198,9 @@ function build(n: number, override?: Partial<Params>): { level: Level; witness: 
     if (params.trap) metrics.traps = countTraps(draft.level, [draft.witness, quick.moves]);
     if (playerSeconds(n, metrics) + 0.5 >= chooseTimer(n, params.breather, metrics)) { fail.timer++; continue; }
     // Meeting the setup target outranks raw score.
-    pool.push({ draft, quick, score: rankScore(draft.level, metrics, quick.moves, params) });
+    // Depth without the greedy runs here (cheap); the finalists get the full measure.
+    const chain = chainStats(draft.level, quick.moves);
+    pool.push({ draft, quick, score: rankScore(draft.level, metrics, quick.moves, params) + chain.deep * 3 + chain.maxChain * 2 });
     // Warmups stop at the first acceptable tray; everything else tries every attempt.
     if (params.breather && metrics.setups >= params.minSetups) break;
   }
@@ -199,20 +216,40 @@ function build(n: number, override?: Partial<Params>): { level: Level; witness: 
   let best: { level: Level; witness: Move[]; score: number } | null = null;
   // Full trays have huge position counts: re-measure only the top one.
   const packed = params.variant === 'packed';
+  // Hardest-start search: off for the first levels and warmups, which should read at a glance.
+  const reselect = n <= 3 ? 0 : params.breather ? 2 : 4;
   for (const { draft, quick } of pool.slice(0, packed ? 1 : 3)) {
-    const exact = solve(draft.level, packed ? 8000 : params.nodes, Infinity);
-    const solved = exact.solved && exact.minMoves <= quick.minMoves && replay(draft.level, exact.moves) ? exact : quick;
-    const metrics = metricsOf(draft.level, draft.witness, solved);
-    metrics.traps = countTraps(draft.level, [draft.witness, solved.moves]);
-    const timer = chooseTimer(n, params.breather, metrics);
-    if (playerSeconds(n, metrics) + 0.5 >= timer) continue;
-    const score = rankScore(draft.level, metrics, solved.moves, params);
-    if (!best || score > best.score) {
-      best = { level: finish(draft.level, metrics, timer, params), witness: draft.witness, score };
+    // The tray as built, plus the hardest starts its bricks can slide into.
+    const starts = reselect ? hardStarts(draft.level, 2500, reselect) : [];
+    const options: { level: Level; witness: Move[]; quick: SolveResult | null }[] = [{ level: draft.level, witness: draft.witness, quick }];
+    for (const st of starts) options.push({ level: withStart(draft.level, st), witness: [], quick: null });
+    for (const opt of options) {
+      const exact = solve(opt.level, packed ? 8000 : params.nodes, Infinity);
+      const ok = exact.solved && replay(opt.level, exact.moves);
+      const solved = opt.quick ? (ok && exact.minMoves <= opt.quick.minMoves ? exact : opt.quick) : ok ? exact : null;
+      if (!solved) continue;
+      const witness = opt.witness.length ? opt.witness : solved.moves;
+      const metrics = metricsOf(opt.level, witness, solved);
+      metrics.traps = countTraps(opt.level, [witness, solved.moves]);
+      const timer = chooseTimer(n, params.breather, metrics);
+      if (playerSeconds(n, metrics) + 0.5 >= timer) continue;
+      let score = rankScore(opt.level, metrics, solved.moves, params);
+      score += depthBonus(depthOf(opt.level, solved.moves));
+      if (!best || score > best.score) {
+        best = { level: finish(opt.level, metrics, timer, params), witness, score };
+      }
     }
   }
   if (!best) return fallback(n, params);
   return { level: best.level, witness: best.witness };
+}
+
+/**
+ * Planning depth outranks raw size: positions where no single slide opens an exit, long
+ * runs of setup slides, and trays a greedy player fails. Measured on the design report.
+ */
+function depthBonus(d: Depth): number {
+  return d.deep * 3 + d.maxChain * 2 + (1 - d.greedyWins) * 12;
 }
 
 /**
@@ -315,10 +352,12 @@ function round2(n: number): number {
 
 function chooseTimer(n: number, breather: boolean, m: Metrics): number {
   const need = playerSeconds(n, m);
+  // Pressure follows the real level, so early clocks are roomy; the range follows the tier.
   const pressure = clamp((breather ? 0.34 : 0.46) + n / 900, 0.34, 0.8);
-  const minT = breather ? 65 : Math.min(100, 50 + Math.floor(n / 6));
+  const d = tierOf(n);
+  const minT = breather ? 65 : Math.min(100, 50 + Math.floor(d / 6));
   // No ceiling: the clock grows with the puzzle instead of capping how hard a level may be.
-  const maxT = 80 + Math.floor(n / 2.2);
+  const maxT = 80 + Math.floor(d / 2.2);
   let timer = Math.round(need / pressure / 5) * 5;
   timer = clamp(timer, minT, maxT);
   if (need + 1 >= timer) timer = Math.ceil((need + 5) / 5) * 5;
@@ -330,7 +369,7 @@ function labelFor(n: number, breather: boolean, m: Metrics): Label {
   if (n >= 25 && n % 25 === 0) return 'Milestone';
   if (paramsFor(n).trap && (m.traps ?? 0) > 0) return 'Trap';
   const score = difficultyScore(m);
-  if (n >= 80 && score >= 48) return 'Super Hard';
+  if (tierOf(n) >= 80 && score >= 48) return 'Super Hard';
   if (score >= 24) return 'Hard';
   return 'Normal';
 }
@@ -421,7 +460,7 @@ function tryBuild(n: number, params: Params, rng: Rng): Draft | null {
     fallback: false,
   };
 
-  const pool = shapePool(n, params.variant, Math.max(w, h));
+  const pool = shapePool(tierOf(n), params.variant, Math.max(w, h));
   const witness: Move[] = [];
   if (params.variant === 'chambers') {
     const top = placeGroup(level, rng, params, pool, outerCount, (_x, y) => y < mid);
@@ -740,12 +779,12 @@ function decorate(level: Level, witness: Move[], rng: Rng, params: Params): bool
       if (p.lock > 0) continue;
       // A room brick only gets ice that outlasts the shutter; otherwise it would thaw unseen.
       if (p.room >= 0 && firstClear[i] <= level.rooms[p.room].openAfter) continue;
-      if (firstClear[i] > 0 && rng.chance(iceChance(level.n))) level.pieces[i].ice = firstClear[i];
+      if (firstClear[i] > 0 && rng.chance(iceChance(tierOf(level.n)))) level.pieces[i].ice = firstClear[i];
     }
   }
   if (params.iceGate) {
     for (let g = 0; g < level.gates.length; g++) {
-      if (gateFirst[g] > 0 && rng.chance(iceChance(level.n) * 0.9)) level.gates[g].ice = gateFirst[g];
+      if (gateFirst[g] > 0 && rng.chance(iceChance(tierOf(level.n)) * 0.9)) level.gates[g].ice = gateFirst[g];
     }
   }
   // Last, so frozen gates are known and skipped: a gate is either frozen or limited, not both.
@@ -840,7 +879,7 @@ function limitGates(level: Level, witness: Move[], rng: Rng, trap = false) {
     const vertical = gate.dir === 0 || gate.dir === 2;
     const fits = level.pieces.filter((p) => {
       const sh = SHAPES[p.shape];
-      return (vertical ? sh.w : sh.h) === gate.span && (p.color === gate.color || level.paint?.some((t) => t.color === gate.color));
+      return (vertical ? sh.w : sh.h) <= gate.span && (p.color === gate.color || level.paint?.some((t) => t.color === gate.color));
     }).length;
     if (fits > used[g] && (trap || rng.chance(0.6))) gate.uses = used[g];
   }
@@ -913,8 +952,11 @@ function baitMoves(level: Level, s: ReturnType<typeof makeState>, x: number, g: 
   const gate = level.gates[g];
   const shape = SHAPES[level.pieces[x].shape];
   const vertical = gate.dir === 0 || gate.dir === 2;
-  if ((vertical ? shape.w : shape.h) !== gate.span || !dirAllowed(level, x, gate.dir)) return null;
-  const offset = gate.along - (vertical ? s.x[x] : s.y[x]);
+  const span = vertical ? shape.w : shape.h;
+  if (span > gate.span || !dirAllowed(level, x, gate.dir)) return null;
+  // Nearest spot inside the opening.
+  const pos = vertical ? s.x[x] : s.y[x];
+  const offset = Math.max(gate.along, Math.min(pos, gate.along + gate.span - span)) - pos;
   const moves: Move[] = [];
   const at = cloneState(s);
   if (offset !== 0) {
@@ -942,7 +984,8 @@ function baitMoves(level: Level, s: ReturnType<typeof makeState>, x: number, g: 
  */
 function tryPacked(n: number, params: Params, rng: Rng, smaller = false): Draft | null {
   const sizes: [number, number][] = [[4, 4], [4, 5], [5, 5], [5, 6], [6, 6]];
-  const target = n < 40 ? 1 : n < 100 ? 2 : n < 200 ? 3 : 4;
+  const d = tierOf(n);
+  const target = d < 40 ? 1 : d < 100 ? 2 : d < 200 ? 3 : 4;
   // Later attempts step down a size when the full tray will not come together.
   const [w, h] = sizes[smaller ? target - 1 : target];
   const floor = new Uint8Array(w * h).fill(1);
@@ -950,7 +993,7 @@ function tryPacked(n: number, params: Params, rng: Rng, smaller = false): Draft 
     n, w, h, floor, gates: [], pieces: [], rooms: [], timer: 60, label: 'Normal',
     variant: 'packed', hint: '', mechanics: [], metrics: emptyMetrics(), fallback: false,
   };
-  const pool = shapePool(n, 'rect', Math.max(w, h)).filter((id) => SHAPES[id].w <= w && SHAPES[id].h <= h);
+  const pool = shapePool(tierOf(n), 'rect', Math.max(w, h)).filter((id) => SHAPES[id].w <= w && SHAPES[id].h <= h);
   const grid = new Int16Array(w * h).fill(-1);
   for (let c = 0; c < w * h; c++) {
     if (grid[c] >= 0) continue;
@@ -1032,11 +1075,8 @@ function fixLock(level: Level, witness: Move[]) {
 }
 
 function matchGate(level: Level, s: ReturnType<typeof makeState>, move: Move): number {
-  const shape = SHAPES[level.pieces[move.i].shape];
-  const span = move.dir === 0 || move.dir === 2 ? shape.w : shape.h;
-  const along = move.dir === 0 || move.dir === 2 ? s.x[move.i] : s.y[move.i];
   const color = s.color[move.i];
-  return level.gates.findIndex((g) => g.dir === move.dir && g.span === span && g.along === along && g.color === color);
+  return level.gates.findIndex((g) => g.dir === move.dir && g.color === color && fitsGate(g, level.pieces[move.i].shape, s.x[move.i], s.y[move.i]));
 }
 
 function fallback(n: number, params: Params): { level: Level; witness: Move[] } {

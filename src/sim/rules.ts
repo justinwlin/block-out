@@ -4,7 +4,7 @@
 // whole on that step.
 
 import { SHAPES } from './shapes';
-import { DX, DY, type Dir, type Level, type Move, type SimState } from './types';
+import { DX, DY, type Dir, type Gate, type Level, type Move, type SimState } from './types';
 
 export function makeState(level: Level): SimState {
   const n = level.pieces.length;
@@ -135,29 +135,42 @@ function leading(shapeId: number, dir: Dir): Int8Array {
   return byDir[dir];
 }
 
-/** True if some open gate of the brick's color and width lines up with the brick going `dir`. */
-function lined(level: Level, s: SimState, piece: number, dir: Dir): boolean {
-  const shape = SHAPES[level.pieces[piece].shape];
-  const vertical = dir === 0 || dir === 2;
+/**
+ * A brick fits a gate when its whole width sits inside the opening: as wide as the gate
+ * or narrower. A 1-wide brick may leave through a 3-wide gate anywhere along it.
+ */
+export function fitsGate(gate: Gate, shapeId: number, x: number, y: number): boolean {
+  const shape = SHAPES[shapeId];
+  const vertical = gate.dir === 0 || gate.dir === 2;
+  const lo = vertical ? x : y;
   const span = vertical ? shape.w : shape.h;
-  const along = vertical ? s.x[piece] : s.y[piece];
+  return lo >= gate.along && lo + span <= gate.along + gate.span;
+}
+
+/** True if the brick's shape is narrow enough for the gate somewhere along it. */
+export function narrowEnough(gate: Gate, shapeId: number): boolean {
+  const shape = SHAPES[shapeId];
+  return (gate.dir === 0 || gate.dir === 2 ? shape.w : shape.h) <= gate.span;
+}
+
+/** True if some open gate of the brick's color fits the brick going `dir`. */
+function lined(level: Level, s: SimState, piece: number, dir: Dir): boolean {
+  const shapeId = level.pieces[piece].shape;
   const color = s.color[piece];
   for (let g = 0; g < level.gates.length; g++) {
     const gate = level.gates[g];
-    if (gate.dir === dir && gate.along === along && gate.span === span && gate.color === color && s.clears >= gate.ice && !gateClosed(level, s, g)) return true;
+    if (gate.dir === dir && gate.color === color && fitsGate(gate, shapeId, s.x[piece], s.y[piece]) && s.clears >= gate.ice && !gateClosed(level, s, g)) return true;
   }
   return false;
 }
 
 /** Index of the open gate a brick at (x, y) would leave through going `dir`, or -1. */
 export function gateFor(level: Level, s: SimState, piece: number, dir: Dir, x: number, y: number): number {
-  const shape = SHAPES[level.pieces[piece].shape];
+  const shapeId = level.pieces[piece].shape;
   const color = s.color[piece];
-  const span = dir === 0 || dir === 2 ? shape.w : shape.h;
-  const along = dir === 0 || dir === 2 ? x : y;
   for (let g = 0; g < level.gates.length; g++) {
     const gate = level.gates[g];
-    if (gate.dir !== dir || gate.color !== color || gate.span !== span || gate.along !== along) continue;
+    if (gate.dir !== dir || gate.color !== color || !fitsGate(gate, shapeId, x, y)) continue;
     if (s.clears < gate.ice || gateClosed(level, s, g)) continue;
     return g;
   }
@@ -332,10 +345,9 @@ function fitTable(level: Level): { gates: number[][]; paint: Set<number> } | nul
     table = {
       paint: new Set((level.paint ?? []).map((t) => t.color)),
       gates: level.pieces.map((p, i) => {
-        const shape = SHAPES[p.shape];
         const out: number[] = [];
         level.gates.forEach((gate, g) => {
-          if (dirAllowed(level, i, gate.dir) && gate.span === (gate.dir === 0 || gate.dir === 2 ? shape.w : shape.h)) out.push(g);
+          if (dirAllowed(level, i, gate.dir) && narrowEnough(gate, p.shape)) out.push(g);
         });
         return out;
       }),

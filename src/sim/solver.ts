@@ -1,7 +1,7 @@
 // Forward solver. Free exits are taken at once (they only help), then A*
 // searches the setup slides. Heuristic: bricks left, plus one for each brick off any gate line.
 
-import { analyze, applyMove, canMove, cloneState, dirAllowed, exitLimited, legalMoves, makeState, occupancy, stateKey, stranded, takeFreeExits, won } from './rules';
+import { analyze, applyMove, canMove, cloneState, dirAllowed, exitLimited, fitsGate, legalMoves, makeState, occupancy, stateKey, stranded, takeFreeExits, won } from './rules';
 import { SHAPES } from './shapes';
 import { type Dir, type Level, type Move, type SimState } from './types';
 
@@ -82,20 +82,15 @@ function setupSlides(level: Level, s: SimState): Move[] {
       if (a.exitAt && exitLimited(level, s, i, dir, a.exitAt)) moves.push({ i, dir, dist: a.exitAt, exit: true });
       if (a.max < 1) continue;
       const dists = new Set<number>([a.max]);
-      if (dir === 1 || dir === 3) {
-        for (const g of level.gates) {
-          if (g.color !== s.color[i] || g.span !== shape.w) continue;
-          if (g.dir !== 0 && g.dir !== 2) continue;
-          const delta = g.along - s.x[i];
-          const dist = dir === 1 ? delta : -delta;
-          if (dist >= 1 && dist <= a.max) dists.add(dist);
-        }
-      } else {
-        for (const g of level.gates) {
-          if (g.color !== s.color[i] || g.span !== shape.h) continue;
-          if (g.dir !== 1 && g.dir !== 3) continue;
-          const delta = g.along - s.y[i];
-          const dist = dir === 2 ? delta : -delta;
+      // Stops that put the brick anywhere inside a gate of its color it is narrow enough for.
+      const horizontal = dir === 1 || dir === 3;
+      for (const g of level.gates) {
+        if (g.color !== s.color[i] || (g.dir === 0 || g.dir === 2) !== horizontal) continue;
+        const span = horizontal ? shape.w : shape.h;
+        const pos = horizontal ? s.x[i] : s.y[i];
+        const sign = dir === 1 || dir === 2 ? 1 : -1;
+        for (let at = g.along; at + span <= g.along + g.span; at++) {
+          const dist = (at - pos) * sign;
           if (dist >= 1 && dist <= a.max) dists.add(dist);
         }
       }
@@ -155,13 +150,11 @@ function remaining(level: Level, s: SimState): number {
   for (let i = 0; i < s.out.length; i++) {
     if (s.out[i]) continue;
     n++;
-    const shape = SHAPES[level.pieces[i].shape];
     let lined = false;
     for (let g = 0; g < level.gates.length && !lined; g++) {
       const gate = level.gates[g];
       if (gate.color !== s.color[i] || !dirAllowed(level, i, gate.dir)) continue;
-      const vertical = gate.dir === 0 || gate.dir === 2;
-      if (gate.span === (vertical ? shape.w : shape.h) && gate.along === (vertical ? s.x[i] : s.y[i])) lined = true;
+      if (fitsGate(gate, level.pieces[i].shape, s.x[i], s.y[i])) lined = true;
     }
     if (!lined) n++;
   }

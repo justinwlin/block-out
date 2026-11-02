@@ -157,6 +157,21 @@ describe('one-way bricks, gate limits, paint', () => {
     expect(moves.some((m) => m.exit && m.dir === 0)).toBe(false);
   });
 
+  it('lets a narrower brick out anywhere inside a wider gate', () => {
+    const level = tray({
+      w: 4, h: 3,
+      pieces: [dot(1, 1, 0), dot(3, 2, 0)],
+      gates: [{ dir: 0, along: 0, span: 3, color: 0, ice: 0 }],
+    });
+    const s = makeState(level);
+    // Column 1 sits inside the 3-wide gate over columns 0-2; column 3 does not.
+    expect(legalMoves(level, s).some((m) => m.i === 0 && m.exit && m.dir === 0)).toBe(true);
+    expect(legalMoves(level, s).some((m) => m.i === 1 && m.exit)).toBe(false);
+    const solved = solve(level);
+    expect(solved.solved).toBe(true);
+    expect(replay(level, solved.moves)).toBe(true);
+  });
+
   it('closes a limited gate after its uses', () => {
     const level = tray({
       w: 3, h: 3,
