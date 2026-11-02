@@ -278,6 +278,8 @@ h1 {
 }
 .lvl small { display: block; color: var(--gold); font-size: 11px; }
 .lvl:disabled { opacity: 0.35; }
+.lvl.locked { opacity: 0.5; }
+.lvl.locked small { font-size: 10px; }
 .row { display: flex; gap: 8px; width: min(460px, 100%); }
 .row .btn { flex: 1; }
 

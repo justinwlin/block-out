@@ -820,7 +820,8 @@ function levelScreen() {
     const openLevel = n <= save.unlocked;
     const best = save.best[String(n)];
     const starsTxt = best ? '★'.repeat(best.stars) + '☆'.repeat(3 - best.stars) : '';
-    return `<button class="lvl" data-n="${n}" ${openLevel ? '' : 'disabled'}>${n}<small>${starsTxt}</small></button>`;
+    // Locked levels stay tappable: tapping one offers to skip ahead to it.
+    return `<button class="lvl${openLevel ? '' : ' locked'}" data-n="${n}">${n}<small>${openLevel ? starsTxt : '🔒'}</small></button>`;
   }).join('');
   const node = el(`<div class="screen solid"><div class="card panel">
     <h1 class="sheet-title">Levels</h1>
@@ -835,12 +836,34 @@ function levelScreen() {
     btn.addEventListener('click', () => {
       const n = Number(btn.dataset.n);
       if (n <= save.unlocked) startLevel(n);
+      else node.append(skipSheet(n));
     });
   });
   node.querySelector('[data-go="prev"]')!.addEventListener('click', () => { chapter = Math.max(0, chapter - 1); renderChrome(); });
   node.querySelector('[data-go="next"]')!.addEventListener('click', () => { chapter += 1; renderChrome(); });
   node.querySelector('[data-go="title"]')!.addEventListener('click', () => open('title'));
   return node;
+}
+
+/** Confirm skipping ahead. Unlocks every level up to n; skipped ones stay playable. */
+function skipSheet(n: number) {
+  const sheet = el(`<div class="screen"><div class="card panel">
+    <p class="eyebrow">Level ${n}</p>
+    <h1 class="sheet-title">Skip ahead?</h1>
+    <p class="sub">This unlocks every level up to ${n}. You can still go back and play the ones you skipped.</p>
+    <div class="stack">
+      <button class="btn gold" data-go="skip">Unlock and play</button>
+      <button class="btn ghost" data-go="cancel">Cancel</button>
+    </div>
+  </div></div>`);
+  sheet.querySelector('[data-go="skip"]')!.addEventListener('click', () => {
+    save.unlocked = Math.max(save.unlocked, n);
+    write(save);
+    audio.play('ui');
+    startLevel(n);
+  });
+  sheet.querySelector('[data-go="cancel"]')!.addEventListener('click', () => sheet.remove());
+  return sheet;
 }
 
 function helpScreen() {
