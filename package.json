@@ -1,0 +1,27 @@
+{
+  "name": "block-out",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 0.0.0.0 --port 5173",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview --host 0.0.0.0 --port 5173",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "sim": "tsx scripts/sim-report.ts",
+    "icons": "tsx scripts/icons.ts",
+    "og": "tsx scripts/og-image.ts",
+    "shots": "tsx scripts/shots.ts"
+  },
+  "devDependencies": {
+    "@fontsource/fredoka": "^5.2.10",
+    "@types/node": "^22.15.21",
+    "playwright": "^1.56.1",
+    "tsx": "^4.20.3",
+    "typescript": "^5.8.3",
+    "vite": "^6.3.5",
+    "vite-plugin-pwa": "^1.0.0",
+    "vitest": "^3.1.4"
+  }
+}

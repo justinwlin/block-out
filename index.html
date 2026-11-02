@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+    <meta name="theme-color" content="#1a100c" />
+    <meta name="description" content="Slide colored bricks out through their gates. Infinite puzzles, works offline." />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Block Out" />
+    <link rel="icon" href="./icons/favicon-64.png" />
+    <link rel="apple-touch-icon" href="./icons/apple-touch-icon.png" />
+    <title>Block Out</title>
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="Block Out" />
+    <meta property="og:title" content="Block Out" />
+    <meta property="og:description" content="Slide every brick out through its own gate. Infinite puzzles, free, no ads." />
+    <meta property="og:url" content="https://justinwlin.github.io/block-out/" />
+    <meta property="og:image" content="https://justinwlin.github.io/block-out/og.png" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta property="og:image:alt" content="Block Out: colorful toy bricks on a cream tray, sliding toward colored gates" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="Block Out" />
+    <meta name="twitter:description" content="Slide every brick out through its own gate. Infinite puzzles, free, no ads." />
+    <meta name="twitter:image" content="https://justinwlin.github.io/block-out/og.png" />
+  </head>
+  <body>
+    <canvas id="board" aria-label="Puzzle tray"></canvas>
+    <header id="hud" class="hidden">
+      <button id="btn-pause" class="icon" aria-label="Pause">❚❚</button>
+      <div class="hud-mid">
+        <div id="hud-level">Level 1</div>
+        <div id="hud-label"></div>
+      </div>
+      <div id="hud-time">1:00</div>
+      <div id="hud-coins">900</div>
+    </header>
+    <p id="hint" class="hidden"></p>
+    <p id="target-banner" class="hidden">Tap a brick</p>
+    <footer id="bar" class="hidden">
+      <button id="boost-clock" class="boost" type="button">
+        <span class="boost-ico">⏱</span><span>Freeze</span><small>300</small>
+      </button>
+      <button id="boost-rocket" class="boost" type="button">
+        <span class="boost-ico">🚀</span><span>Rocket</span><small>600</small>
+      </button>
+      <button id="boost-ufo" class="boost" type="button">
+        <span class="boost-ico">🛸</span><span>UFO</span><small>1200</small>
+      </button>
+    </footer>
+    <div id="screens"></div>
+    <div id="toast" class="toast"></div>
+    <div id="safe-probe" aria-hidden="true"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
