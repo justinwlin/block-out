@@ -23,7 +23,7 @@ import {
   type Variant,
 } from './types';
 
-export const GEN_VERSION = 1;
+export const GEN_VERSION = 2;
 
 const cache = new Map<number, { level: Level; witness: Move[] }>();
 
@@ -75,7 +75,7 @@ function clamp(n: number, lo: number, hi: number): number {
 export function paramsFor(n: number): Params {
   const breather = n % 5 === 0;
   const t = breather ? Math.max(1, n - 4) : n;
-  let pieces = clamp(Math.round(3 + 7 * (1 - Math.exp(-t / 110))), 3, 10);
+  let pieces = clamp(Math.round(3 + 8 * (1 - Math.exp(-t / 110))), 3, 11);
   if (breather) pieces = Math.max(3, pieces - 1);
   const variant = variantFor(n, breather);
   let colors = variant === 'checker' ? 2 : clamp(1 + Math.floor((t - 1) / 12), 1, 5);
@@ -107,15 +107,17 @@ function variantFor(n: number, breather: boolean): Variant {
 function boardFor(pieces: number, variant: Variant): { w: number; h: number } {
   if (variant === 'chambers') return { w: pieces >= 8 ? 11 : 9, h: pieces >= 7 ? 6 : 5 };
   if (variant === 'U') return { w: 7, h: pieces >= 6 ? 8 : 7 };
+  // Tight trays: bricks should cover most of the floor so every move depends on another.
   const span: Record<number, [number, number]> = {
-    3: [5, 6],
-    4: [6, 6],
-    5: [6, 7],
-    6: [7, 7],
-    7: [7, 8],
-    8: [8, 8],
-    9: [8, 9],
-    10: [8, 9],
+    3: [4, 4],
+    4: [4, 5],
+    5: [5, 5],
+    6: [5, 6],
+    7: [5, 6],
+    8: [6, 6],
+    9: [6, 7],
+    10: [6, 7],
+    11: [7, 7],
   };
   const [w, h] = span[pieces] ?? [8, 9];
   return { w, h };
@@ -335,7 +337,7 @@ function placeGroup(
 ): Move[] | null {
   const plan: { shape: number; color: number }[] = [];
   for (let i = 0; i < count; i++) {
-    const shape = rng.pick(pool);
+    const shape = pickWeighted(rng, pool);
     const color = i < params.colors ? i % params.colors : rng.int(0, params.colors);
     const s = SHAPES[shape];
     if (!regionFits(level, region, s.w, s.h) && shape !== DOT) {
@@ -350,6 +352,18 @@ function placeGroup(
     chunks[p] = moves;
   }
   return chunks.flat();
+}
+
+/** Bigger bricks are picked more often: weight is cell count squared. */
+function pickWeighted(rng: Rng, pool: readonly number[]): number {
+  let total = 0;
+  for (const id of pool) total += SHAPES[id].cells.length ** 2;
+  let r = rng.float() * total;
+  for (const id of pool) {
+    r -= SHAPES[id].cells.length ** 2;
+    if (r < 0) return id;
+  }
+  return pool[pool.length - 1];
 }
 
 function regionFits(level: Level, region: (x: number, y: number) => boolean, bw: number, bh: number): boolean {

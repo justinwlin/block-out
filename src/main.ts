@@ -10,7 +10,7 @@ import { SHAPES } from './sim/shapes';
 import { DX, DY, type Dir, type Level, type SimState } from './sim/types';
 import { AudioBus } from './game/audio';
 import { Haptics } from './game/haptics';
-import { burst, geomFor, paintColor, render, stepFx, type Floater, type Frame, type Geom, type Particle } from './game/render';
+import { burst, geomFor, paintColor, render, stepFx, voxel, wallFor, type Floater, type Frame, type Geom, type Particle } from './game/render';
 import { load, write, type Save, type Settings, type Snapshot } from './game/save';
 
 registerSW({ immediate: true });
@@ -51,6 +51,10 @@ interface ExitAnim {
   dist: number;
   /** Seconds for the slide-out. */
   dur: number;
+  /** Cells between the start and the last fully-on-tray position. */
+  toEdge: number;
+  /** Fraction of the brick already broken into voxels. */
+  spawned: number;
 }
 interface Drag {
   i: number;
@@ -226,11 +230,48 @@ function finishExit(s: Session, i: number) {
   s.live[i].out = true;
   s.frame.clears = s.sim.clears;
   s.frame.keys = s.sim.keys;
-  burst(s.frame.particles, c.x, c.y, col.hex, feedback('exit', save.settings.reduceMotion).particles);
+  if (save.settings.reduceMotion) burst(s.frame.particles, c.x, c.y, col.hex, 0);
   juice('exit');
   noteChanges(s, beforeC, beforeK);
   s.exiting = null;
   if (won(s.level, s.sim)) onWin();
+}
+
+/**
+ * Break the part of a leaving brick that has passed the tray edge into voxels.
+ * Debris sprays out of the gate's outer face, along the gate's span.
+ */
+function sprayVoxels(s: Session, ex: ExitAnim, passed: number) {
+  if (save.settings.reduceMotion || passed <= ex.spawned) return;
+  const p = s.level.pieces[ex.i];
+  const shape = SHAPES[p.shape];
+  const col = paintColor(s.level, p.color);
+  const { cell, ox, oy } = s.geom;
+  const wall = wallFor(cell);
+  const vertical = ex.dir === 0 || ex.dir === 2;
+  // Roughly 9 voxels per cell of brick, capped for big bricks.
+  const total = Math.min(90, shape.cells.length * 9);
+  const n = Math.round(total * passed) - Math.round(total * ex.spawned);
+  ex.spawned = passed;
+  const from = vertical ? ox + s.sim.x[ex.i] * cell : oy + s.sim.y[ex.i] * cell;
+  const span = (vertical ? shape.w : shape.h) * cell;
+  // Spawn across the gate's thickness, from the tray edge to its outer face.
+  const edgeX = ex.dir === 3 ? ox : ex.dir === 1 ? ox + s.level.w * cell : 0;
+  const edgeY = ex.dir === 0 ? oy : ex.dir === 2 ? oy + s.level.h * cell : 0;
+  const k = cell / 60;
+  for (let v = 0; v < n; v++) {
+    const along = from + Math.random() * span;
+    const depth = Math.random() * wall;
+    const x = vertical ? along : edgeX + DX[ex.dir] * depth;
+    const y = vertical ? edgeY + DY[ex.dir] * depth : along;
+    // A short pop outward, a wide sideways scatter, and an upward kick; gravity does the rest.
+    // Outward speed stays low so debris stays on screen when a gate sits at the screen edge.
+    const out = (30 + Math.random() * 110) * k;
+    const side = (Math.random() - 0.5) * 260 * k;
+    const vx = vertical ? side : DX[ex.dir] * out;
+    const vy = vertical ? DY[ex.dir] * (60 + Math.random() * 160) * k : side * 0.4 - (120 + Math.random() * 200) * k;
+    voxel(s.frame.particles, x, y, vx, vy, col.hex, col.deep, cell * (0.1 + Math.random() * 0.1));
+  }
 }
 
 /** Where a leaving brick crosses the tray edge, in pixels. */
@@ -261,8 +302,8 @@ function beginExit(s: Session, i: number, dir: Dir, x: number, y: number, speed 
   const edge = dir === 0 || dir === 2 ? y : x;
   const dist = span + Math.abs(edge - from) + 0.15;
   // Carry the drag speed into the exit so the brick never slows down at the gate.
-  const dur = Math.max(0.14, Math.min(0.3, dist / Math.max(9, speed * 1.2)));
-  s.exiting = { i, dir, t: 0, x: live.x, y: live.y, dist, dur };
+  const dur = Math.max(0.2, Math.min(0.36, dist / Math.max(8, speed)));
+  s.exiting = { i, dir, t: 0, x: live.x, y: live.y, dist, dur, toEdge: Math.abs(edge - from), spawned: 0 };
   s.frame.exitId = i;
   audio.play('tick');
 }
@@ -811,6 +852,9 @@ function loop(now: number) {
       const ease = k * (0.6 + 0.4 * k);
       s.live[ex.i].x = ex.x + DX[ex.dir] * ease * ex.dist;
       s.live[ex.i].y = ex.y + DY[ex.dir] * ease * ex.dist;
+      const shape = SHAPES[s.level.pieces[ex.i].shape];
+      const span = ex.dir === 0 || ex.dir === 2 ? shape.h : shape.w;
+      sprayVoxels(s, ex, Math.max(0, Math.min(1, (ease * ex.dist - ex.toEdge) / span)));
       if (k >= 1) {
         finishExit(s, ex.i);
         s.frame.exitId = -1;
@@ -820,6 +864,8 @@ function loop(now: number) {
     stepFx(s.frame, dt);
     if (Math.floor(s.frame.time) !== Math.floor(s.frame.time - dt)) persistProgress();
   }
+  // Let the last brick's debris finish falling behind the result screen.
+  else if (s?.over && s.frame.particles.length) stepFx(s.frame, dt);
   if (s) {
     s.frame.dragId = s.drag?.i ?? -1;
     s.frame.symbols = save.settings.symbols;

@@ -30,13 +30,20 @@ function rotations(name: string, cells: readonly (readonly [number, number])[], 
 
 export const SHAPES: readonly Shape[] = [
   ...rotations('dot', [[0, 0]], 1),
-  ...rotations('bar2', [[0, 0], [1, 0]], 3),
-  ...rotations('bar3', [[0, 0], [1, 0], [2, 0]], 6),
-  ...rotations('box', [[0, 0], [1, 0], [0, 1], [1, 1]], 8),
-  ...rotations('L', [[0, 0], [0, 1], [1, 1]], 10),
-  ...rotations('T', [[0, 0], [1, 0], [2, 0], [1, 1]], 14),
-  ...rotations('S', [[1, 0], [2, 0], [0, 1], [1, 1]], 18),
-  ...rotations('plus', [[1, 0], [0, 1], [1, 1], [2, 1], [1, 2]], 26),
+  ...rotations('bar2', [[0, 0], [1, 0]], 1),
+  ...rotations('bar3', [[0, 0], [1, 0], [2, 0]], 2),
+  ...rotations('box', [[0, 0], [1, 0], [0, 1], [1, 1]], 3),
+  ...rotations('L', [[0, 0], [0, 1], [1, 1]], 4),
+  ...rotations('T', [[0, 0], [1, 0], [2, 0], [1, 1]], 7),
+  ...rotations('S', [[1, 0], [2, 0], [0, 1], [1, 1]], 10),
+  ...rotations('plus', [[1, 0], [0, 1], [1, 1], [2, 1], [1, 2]], 18),
+  // Added in generator v2. Appended so existing shape ids keep their meaning.
+  ...rotations('J', [[1, 0], [1, 1], [0, 1]], 5),
+  ...rotations('bar4', [[0, 0], [1, 0], [2, 0], [3, 0]], 9),
+  ...rotations('Z', [[0, 0], [1, 0], [1, 1], [2, 1]], 11),
+  ...rotations('bigL', [[0, 0], [0, 1], [0, 2], [1, 2]], 12),
+  ...rotations('bigJ', [[1, 0], [1, 1], [1, 2], [0, 2]], 13),
+  ...rotations('slab', [[0, 0], [1, 0], [0, 1], [1, 1], [0, 2], [1, 2]], 15),
 ];
 
 export const DOT = 0;

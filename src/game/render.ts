@@ -20,6 +20,10 @@ export interface Particle {
   max: number;
   color: string;
   size: number;
+  /** Voxel debris: a small shaded cube that tumbles. */
+  deep?: string;
+  rot?: number;
+  vr?: number;
 }
 
 export interface Floater {
@@ -174,10 +178,14 @@ export function render(ctx: CanvasRenderingContext2D, g: Geom, frame: Frame) {
   }
 
   for (const p of frame.particles) {
-    ctx.globalAlpha = Math.max(0, p.life / p.max);
-    ctx.fillStyle = p.color;
-    round(ctx, p.x, p.y, p.size, p.size, 2);
-    ctx.fill();
+    // Hold full opacity, then fade over the last third of life.
+    ctx.globalAlpha = Math.max(0, Math.min(1, (p.life / p.max) * 3));
+    if (p.deep) drawVoxel(ctx, p);
+    else {
+      ctx.fillStyle = p.color;
+      round(ctx, p.x, p.y, p.size, p.size, 2);
+      ctx.fill();
+    }
   }
   ctx.globalAlpha = 1;
   ctx.font = `700 ${Math.max(14, cell * 0.42)}px Fredoka, sans-serif`;
@@ -566,6 +574,33 @@ function addRound(ctx: CanvasRenderingContext2D, x: number, y: number, w: number
   ctx.closePath();
 }
 
+function drawVoxel(ctx: CanvasRenderingContext2D, p: Particle) {
+  const s = p.size;
+  ctx.save();
+  ctx.translate(p.x, p.y);
+  ctx.rotate(p.rot ?? 0);
+  const d = s * 0.28;
+  ctx.fillStyle = p.deep!;
+  ctx.fillRect(-s / 2, -s / 2 + d, s, s);
+  ctx.fillStyle = p.color;
+  ctx.fillRect(-s / 2, -s / 2, s, s);
+  ctx.fillStyle = 'rgba(255,255,255,.35)';
+  ctx.fillRect(-s / 2, -s / 2, s, s * 0.22);
+  ctx.restore();
+}
+
+/** One voxel of brick debris. */
+export function voxel(particles: Particle[], x: number, y: number, vx: number, vy: number, hex: string, deep: string, size: number) {
+  const life = 0.7 + Math.random() * 0.5;
+  particles.push({
+    x, y, vx, vy, life, max: life, size,
+    color: Math.random() < 0.3 ? mix(hex, '#ffffff', 0.18) : hex,
+    deep,
+    rot: Math.random() * Math.PI,
+    vr: (Math.random() - 0.5) * 14,
+  });
+}
+
 export function burst(particles: Particle[], x: number, y: number, color: string, n: number) {
   for (let i = 0; i < n; i++) {
     const a = Math.random() * Math.PI * 2;
@@ -587,7 +622,12 @@ export function stepFx(frame: Frame, dt: number) {
     p.life -= dt;
     p.x += p.vx * dt;
     p.y += p.vy * dt;
-    p.vy += 420 * dt;
+    if (p.deep) {
+      // Debris: heavier, with air drag so it puffs out and then drops.
+      p.vx *= Math.exp(-dt * 2.4);
+      p.vy += 900 * dt;
+      p.rot = (p.rot ?? 0) + (p.vr ?? 0) * dt;
+    } else p.vy += 420 * dt;
   }
   frame.particles = frame.particles.filter((p) => p.life > 0);
   for (const t of frame.texts) {

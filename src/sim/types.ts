@@ -99,10 +99,10 @@ export interface SimState {
 }
 
 export const COLORS = [
-  { id: 'coral', hex: '#ff4d4d', deep: '#9d2430', symbol: '●' },
-  { id: 'blue', hex: '#3c7dff', deep: '#1a3f93', symbol: '■' },
-  { id: 'lime', hex: '#67d34a', deep: '#1d6a16', symbol: '▲' },
-  { id: 'gold', hex: '#ffc43d', deep: '#8a5b00', symbol: '★' },
-  { id: 'violet', hex: '#b06bff', deep: '#5c2896', symbol: '◆' },
-  { id: 'teal', hex: '#2ad4c7', deep: '#0c6e68', symbol: '✚' },
+  { id: 'red', hex: '#e8392f', deep: '#8e1a14', symbol: '●' },
+  { id: 'yellow', hex: '#ffc21a', deep: '#a8700a', symbol: '★' },
+  { id: 'blue', hex: '#1f6cf0', deep: '#0f3a8f', symbol: '■' },
+  { id: 'white', hex: '#f4efe9', deep: '#a8a199', symbol: '○' },
+  { id: 'black', hex: '#34343a', deep: '#0e0e12', symbol: '◆' },
+  { id: 'green', hex: '#3fbf3a', deep: '#1c6a19', symbol: '▲' },
 ] as const;

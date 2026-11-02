@@ -1,5 +1,6 @@
-# Build, test and publish to GitHub Pages (gh-pages branch) on every push to main.
-name: Deploy to GitHub Pages
+# Build, test and publish on every push to main: GitHub Pages (gh-pages branch) and Cloudflare Pages.
+# Cloudflare needs repo secrets CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID; the step is skipped without the token.
+name: Deploy
 
 on:
   push:
@@ -16,6 +17,8 @@ concurrency:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    env:
+      HAS_CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN != '' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -32,3 +35,10 @@ jobs:
           publish_dir: ./dist
           publish_branch: gh-pages
           force_orphan: true
+      - name: Deploy to Cloudflare Pages
+        if: ${{ env.HAS_CF_TOKEN == 'true' }}
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: pages deploy dist --project-name=block-out --branch=main --commit-dirty=true
