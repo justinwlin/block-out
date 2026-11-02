@@ -37,18 +37,22 @@ export function gateClosed(level: Level, s: SimState, g: number): boolean {
   return uses > 0 && s.passed[g] >= uses;
 }
 
-/** A brick whose slide ends with any cell on a paint tile takes that tile's color. */
+/**
+ * A brick whose slide ends on a paint tile takes that tile's color. If it ends on tiles of
+ * two different colors, the colors cancel and it keeps its own.
+ */
 export function settlePaint(level: Level, s: SimState, piece: number): void {
   if (!level.paint?.length) return;
   const shape = SHAPES[level.pieces[piece].shape];
+  let color = -1;
   for (const t of level.paint) {
     for (const [dx, dy] of shape.cells) {
-      if (s.x[piece] + dx === t.x && s.y[piece] + dy === t.y) {
-        s.color[piece] = t.color;
-        return;
-      }
+      if (s.x[piece] + dx !== t.x || s.y[piece] + dy !== t.y) continue;
+      if (color >= 0 && color !== t.color) return;
+      color = t.color;
     }
   }
+  if (color >= 0) s.color[piece] = color;
 }
 
 export function won(level: Level, s: SimState): boolean {

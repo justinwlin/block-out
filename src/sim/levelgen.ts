@@ -26,7 +26,7 @@ import {
   type Variant,
 } from './types';
 
-export const GEN_VERSION = 7;
+export const GEN_VERSION = 8;
 
 const cache = new Map<number, { level: Level; witness: Move[] }>();
 
@@ -401,7 +401,7 @@ function present(level: Level, params: Params, label: Label): { hint: string; me
   if (label === 'Milestone') hint = 'Milestone tray. Bigger and tougher than the levels around it.';
   else if (label === 'Trap') hint = 'Trap tray. An exit that looks free can use up a gate another brick needs.';
   else if (level.variant === 'packed') hint = 'A full tray. Find the brick that can leave first.';
-  else if (level.paint?.length) hint = 'A brick that stops on a paint tile turns that color.';
+  else if (level.paint?.length) hint = 'A brick that stops on a paint tile turns that color. Two different paints cancel out.';
   else if (mechanics.includes('limited-gate')) hint = 'A gate with dots closes after that many bricks pass through.';
   else if (mechanics.includes('one-way')) hint = 'Bricks with arrows only slide the way the arrows point.';
   else if (level.variant === 'chambers') hint = 'Two rooms. Clear the top one and the shutter lifts on the bottom.';

@@ -769,7 +769,7 @@ function helpScreen() {
       <p>Line it up with a <b>gate of its color</b> that is as wide as the brick or wider, and drag it out.</p>
       <p><b>Ice</b> (blue, with a snowflake) thaws after that many bricks have left. Frozen gates work the same way.</p>
       <p>A brick with a <b>key</b> unlocks <b>padlocked</b> bricks when it leaves. The padlock shows how many keys it still needs.</p>
-      <p><b>Arrows</b> on a brick mean it only slides that way. <b>Dots</b> on a gate count how many more bricks it lets through, so spend them on the right bricks. <b>Trap</b> levels hide an easy exit that strands another brick. A brick that stops on a <b>paint</b> splash turns that color. A <b>shutter</b> lifts when its count reaches zero.</p>
+      <p><b>Arrows</b> on a brick mean it only slides that way. <b>Dots</b> on a gate count how many more bricks it lets through, so spend them on the right bricks. <b>Trap</b> levels hide an easy exit that strands another brick. A brick that stops on a <b>paint</b> splash turns that color. Two different paints under it cancel out. A <b>shutter</b> lifts when its count reaches zero.</p>
       <p>Clear the tray before the clock runs out, or turn <b>Timer</b> off in Settings. Retry is always free.</p>
     </div>
     <button class="btn" data-go="title">Back</button>

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { destroyColor, destroyPiece } from '../src/sim/boosters';
 import { applyMove, legalMoves, makeState, replay, stranded, won } from '../src/sim/rules';
 import { solve } from '../src/sim/solver';
-import { DOT } from '../src/sim/shapes';
+import { DOT, SHAPES } from '../src/sim/shapes';
 import type { Level, PieceDef } from '../src/sim/types';
 
 function tray(partial: Partial<Level> & Pick<Level, 'w' | 'h' | 'pieces' | 'gates'>): Level {
@@ -204,6 +204,23 @@ describe('one-way bricks, gate limits, paint', () => {
     const solved = solve(level);
     expect(solved.solved).toBe(true);
     expect(solved.moves.some((m) => m.i === 0 && m.exit && m.dir === 3)).toBe(false);
+  });
+
+  it('keeps its color when a slide ends on two paints of different colors', () => {
+    const level = tray({
+      w: 4, h: 3,
+      pieces: [{ shape: SHAPES.findIndex((sh) => sh.w === 2 && sh.h === 1 && sh.cells.length === 2), color: 1, x: 0, y: 0, ice: 0, lock: 0, keys: 0, room: -1 }],
+      gates: [{ dir: 1, along: 0, span: 1, color: 1, ice: 0 }],
+    });
+    level.paint = [{ x: 2, y: 1, color: 0 }, { x: 3, y: 1, color: 2 }, { x: 0, y: 2, color: 0 }, { x: 1, y: 2, color: 0 }];
+    const s = makeState(level);
+    applyMove(level, s, { i: 0, dir: 2, dist: 1, exit: false });
+    applyMove(level, s, { i: 0, dir: 1, dist: 2, exit: false });
+    expect(s.color[0]).toBe(1);
+    // Two tiles of the same color still paint.
+    applyMove(level, s, { i: 0, dir: 3, dist: 2, exit: false });
+    applyMove(level, s, { i: 0, dir: 2, dist: 1, exit: false });
+    expect(s.color[0]).toBe(0);
   });
 
   it('recolors a brick whose slide ends on paint, and the solver uses it', () => {
