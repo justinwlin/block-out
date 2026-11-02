@@ -53,7 +53,8 @@ export interface Frame {
 
 export function geomFor(viewW: number, viewH: number, boardW: number, boardH: number, safeTop: number, safeBot: number): Geom {
   const top = 92 + safeTop;
-  const bot = 64 + safeBot;
+  // Room for a two-line hint under the tray.
+  const bot = 88 + safeBot;
   const frame = 0.48;
   const cell = Math.max(28, Math.min(88, Math.floor(Math.min(
     (viewW - 12) / (boardW + frame * 2),

@@ -76,7 +76,7 @@ function clamp(n: number, lo: number, hi: number): number {
 export function paramsFor(n: number): Params {
   const breather = n % 5 === 0;
   const t = breather ? Math.max(1, n - 4) : n;
-  let pieces = clamp(Math.round(3 + 8 * (1 - Math.exp(-t / 75))), 3, 11);
+  let pieces = clamp(Math.round(3 + 8 * (1 - Math.exp(-t / 95))), 3, 11);
   if (breather) pieces = Math.max(3, pieces - 1);
   const variant = variantFor(n, breather);
   // One color for the first two levels, then a new color roughly every six levels, up to all six.
@@ -107,7 +107,8 @@ function variantFor(n: number, breather: boolean): Variant {
 }
 
 function boardFor(pieces: number, variant: Variant): { w: number; h: number } {
-  if (variant === 'chambers') return { w: pieces >= 8 ? 11 : 9, h: pieces >= 7 ? 6 : 5 };
+  // Two pockets stacked top and bottom with a wall row between: tall, so it fits a portrait phone.
+  if (variant === 'chambers') return { w: pieces >= 8 ? 6 : 5, h: pieces >= 7 ? 11 : 9 };
   if (variant === 'U') return { w: 7, h: pieces >= 6 ? 8 : 7 };
   // Tight trays: bricks should cover most of the floor so every move depends on another.
   const span: Record<number, [number, number]> = {
@@ -138,8 +139,9 @@ function build(n: number): { level: Level; witness: Move[] } {
   const params = paramsFor(n);
   const rng = new Rng(hash32(`block-out:${GEN_VERSION}:${n}`));
   let best: Draft | null = null;
+  let bestScore = -Infinity;
   const fail = { build: 0, witness: 0, solve: 0, timer: 0 };
-  for (let attempt = 0; attempt < 6; attempt++) {
+  for (let attempt = 0; attempt < (params.breather ? 6 : 10); attempt++) {
     const draft = tryBuild(n, params, rng);
     if (!draft) { fail.build++; continue; }
     if (!replay(draft.level, draft.witness)) { fail.witness++; continue; }
@@ -152,8 +154,11 @@ function build(n: number): { level: Level; witness: Move[] } {
     if (playerSeconds(n, metrics) + 0.5 >= timer) { fail.timer++; continue; }
     const level = finish(draft.level, metrics, timer, params);
     const candidate = { level, witness: draft.witness };
-    if (!best || metrics.setups > best.level.metrics.setups) best = candidate;
-    if (metrics.setups >= params.minSetups) break;
+    // Keep the hardest candidate. Meeting the setup target outranks raw score.
+    const score = difficultyScore(metrics) + (metrics.setups >= params.minSetups ? 1000 : 0);
+    if (!best || score > bestScore) { best = candidate; bestScore = score; }
+    // Warmups stop at the first acceptable tray; everything else tries every attempt.
+    if (params.breather && metrics.setups >= params.minSetups) break;
   }
   if (best) return best;
   if (process.env.GEN_DEBUG) console.log('fallback', n, fail, params);
@@ -224,12 +229,12 @@ function present(level: Level, params: Params, label: Label): { hint: string; me
   if (level.pieces.some((p) => p.lock > 0)) mechanics.push('lock');
   if (level.rooms.length) mechanics.push('room');
   let hint = 'Drag a brick out through the gate of its color. It has to fit the opening.';
-  if (level.rooms.length) hint = 'The crowned shutter opens when its count hits zero, and more bricks come with it.';
+  if (level.variant === 'chambers') hint = 'Two rooms. Clear the top one and the shutter lifts on the bottom.';
+  else if (level.rooms.length) hint = 'The crowned shutter opens when its count hits zero, and more bricks come with it.';
   else if (mechanics.includes('lock')) hint = 'A padlock stays put until enough key bricks have left.';
   else if (mechanics.includes('ice-gate')) hint = 'Frost on a gate melts as other bricks leave.';
   else if (mechanics.includes('ice')) hint = 'Frozen bricks thaw after enough bricks leave.';
   else if (level.variant === 'checker') hint = 'Ink out the black gate, paper out the white one. Order is the whole puzzle.';
-  else if (level.variant === 'chambers') hint = 'Two pockets, two sets of gates. Clear each side.';
   else if (level.variant === 'U') hint = 'The tray bends. Bricks cannot cross the notch.';
   else if (label === 'Warmup') hint = 'A quieter tray. Same rules, more room to breathe.';
   else if (params.colors === 1) hint = 'One color. Slide each brick out through the gate it fits.';
@@ -241,13 +246,15 @@ function tryBuild(n: number, params: Params, rng: Rng): Draft | null {
   const floor = new Uint8Array(w * h);
   floor.fill(1);
   if (params.variant === 'U') carveU(floor, w, h);
-  if (params.variant === 'chambers') {
-    const mid = Math.floor(w / 2);
-    for (let y = 0; y < h; y++) floor[y * w + mid] = 0;
-  }
+  const mid = Math.floor(h / 2);
+  if (params.variant === 'chambers') for (let x = 0; x < w; x++) floor[mid * w + x] = 0;
   let room: Room | null = null;
   let innerCount = 0;
-  if (params.room && w >= 6 && h >= 6 && params.pieces >= 6) {
+  if (params.variant === 'chambers') {
+    // The bottom pocket is shuttered until the top pocket is clear: one room, then the next.
+    room = { x: 0, y: mid + 1, w, h: h - mid - 1, openAfter: 0 };
+    innerCount = Math.floor(params.pieces / 2);
+  } else if (params.room && w >= 6 && h >= 6 && params.pieces >= 6) {
     const rw = 3;
     const rh = 2;
     room = { x: w - rw, y: h - rh, w: rw, h: rh, openAfter: 0 };
@@ -276,15 +283,9 @@ function tryBuild(n: number, params: Params, rng: Rng): Draft | null {
   const pool = shapePool(n, params.variant, Math.max(w, h));
   const witness: Move[] = [];
   if (params.variant === 'chambers') {
-    const mid = Math.floor(w / 2);
-    const left = Math.ceil(outerCount / 2);
-    const right = outerCount - left;
-    const a = placeGroup(level, rng, params, pool, left, (x, y) => x < mid && !inRoom(room, x, y));
-    if (!a) return null;
-    witness.push(...a);
-    const b = placeGroup(level, rng, params, pool, right, (x, y) => x > mid && !inRoom(room, x, y));
-    if (!b) return null;
-    witness.push(...b);
+    const top = placeGroup(level, rng, params, pool, outerCount, (_x, y) => y < mid);
+    if (!top) return null;
+    witness.push(...top);
   } else {
     const placed = placeGroup(level, rng, params, pool, outerCount, (x, y) => !inRoom(room, x, y));
     if (!placed) return null;
@@ -292,7 +293,9 @@ function tryBuild(n: number, params: Params, rng: Rng): Draft | null {
   }
   if (room && innerCount) {
     room.openAfter = 0;
-    const inner = placeGroup(level, rng, { ...params, minPark: 0, maxPark: 1, tuck: 0.2 }, pool, innerCount, (x, y) => inRoom(room, x, y), 0);
+    // A shutter room is a small bonus; a chamber is half the puzzle, so it keeps full difficulty.
+    const innerParams = params.variant === 'chambers' ? params : { ...params, minPark: 0, maxPark: 1, tuck: 0.2 };
+    const inner = placeGroup(level, rng, innerParams, pool, innerCount, (x, y) => inRoom(room, x, y), 0);
     room.openAfter = outerCount;
     if (!inner) return null;
     for (const p of level.pieces) if (inRoom(room, p.x, p.y)) p.room = 0;
@@ -571,6 +574,8 @@ function decorate(level: Level, witness: Move[], rng: Rng, params: Params): bool
     }
   }
   if (params.locks) fixLock(level, witness);
+  // Keys only mean something if a padlock survived; otherwise drop them.
+  if (!level.pieces.some((p) => p.lock > 0)) for (const p of level.pieces) p.keys = 0;
 
   if (params.ice) {
     for (let i = 0; i < level.pieces.length; i++) {
