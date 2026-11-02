@@ -95,6 +95,8 @@ let settingsBack: Mode = 'title';
 let chapter = 0;
 let session: Session | null = null;
 let toastTimer = 0;
+/** Shown on the home screen: package version, commit and build time. */
+const VERSION_LABEL = `v${__APP_VERSION__} · ${__BUILD_SHA__} · ${new Date(__BUILD_TIME__).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}`;
 
 function safeInsets() {
   const probe = document.querySelector<HTMLElement>('#safe-probe')!;
@@ -659,6 +661,7 @@ function titleScreen() {
       <button data-go="levels">All levels</button>
       <button data-go="help">How to play</button>
     </div>
+    <div class="version" id="version">${VERSION_LABEL}</div>
   </div>`);
   node.querySelector('[data-go="play"]')!.addEventListener('click', () => {
     audio.unlock();
