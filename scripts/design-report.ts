@@ -69,14 +69,14 @@ if (process.argv[2] === 'show') {
     const ms = performance.now() - t;
     const sol = solve(level, 30000, Infinity);
     const d = depthOf(level, sol.solved ? sol.moves : []);
-    console.log(JSON.stringify({ n, variant: level.label === 'Warmup' ? 'warmup' : level.variant, breather: level.label === 'Warmup', fallback: level.fallback, deep: d.deep, chain: d.maxChain, greedy: d.greedyWins, min: sol.minMoves, score: difficultyScore(level.metrics), ms }));
+    console.log(JSON.stringify({ n, variant: level.label === 'Warmup' ? 'warmup' : level.variant, breather: level.label === 'Warmup', fallback: level.fallback, deep: d.deep, chain: d.maxChain, greedy: d.greedyWins, shuffles: d.shuffles, min: sol.minMoves, score: difficultyScore(level.metrics), ms }));
   }
 } else {
   const from = Number(process.argv[2] ?? 1);
   const to = Number(process.argv[3] ?? 200);
   // Interleaved shards on every core: level n goes to shard n % jobs, so each shard gets a mix.
   const jobs = Math.max(1, Math.min(availableParallelism() - 1, to - from + 1));
-  type Row = { n: number; variant: string; breather: boolean; fallback: boolean; deep: number; chain: number; greedy: number; min: number; score: number; ms: number };
+  type Row = { n: number; variant: string; breather: boolean; fallback: boolean; shuffles: number; deep: number; chain: number; greedy: number; min: number; score: number; ms: number };
   const chunks: [number, number][] = [];
   const size = Math.ceil((to - from + 1) / (jobs * 4));
   for (let a = from; a <= to; a += size) chunks.push([a, Math.min(to, a + size - 1)]);
@@ -97,7 +97,7 @@ if (process.argv[2] === 'show') {
   }));
   rows.sort((x, y) => x.n - y.n);
   const bands = [[1, 20], [21, 50], [51, 100], [101, 200], [201, 300], [301, 500]].filter(([lo, hi]) => hi >= from && lo <= to);
-  const avg = (rs: typeof rows, k: 'deep' | 'chain' | 'greedy' | 'min' | 'score' | 'ms') => rs.reduce((a, r) => a + r[k], 0) / rs.length;
+  const avg = (rs: typeof rows, k: 'deep' | 'chain' | 'greedy' | 'min' | 'score' | 'ms' | 'shuffles') => rs.reduce((a, r) => a + r[k], 0) / rs.length;
   console.log('band       n  greedy  shallow  deep  chain   min  score  gen-ms(p95)');
   for (const [lo, hi] of bands) {
     const b = rows.filter((r) => r.n >= lo && r.n <= hi);
@@ -118,9 +118,9 @@ if (process.argv[2] === 'show') {
     );
   }
   console.log(`fallbacks ${rows.filter((r) => r.fallback).length}/${rows.length}`);
-  console.log('\nby kind     n  greedy  deep  chain   min');
+  console.log('\nby kind     n  greedy  deep  chain   min  shuffle');
   for (const v of [...new Set(rows.map((r) => r.variant))].sort()) {
     const b = rows.filter((r) => r.variant === v);
-    console.log(v.padEnd(9), String(b.length).padStart(3), `${Math.round(avg(b, 'greedy') * 100)}%`.padStart(7), avg(b, 'deep').toFixed(1).padStart(5), avg(b, 'chain').toFixed(1).padStart(6), avg(b, 'min').toFixed(1).padStart(5));
+    console.log(v.padEnd(9), String(b.length).padStart(3), `${Math.round(avg(b, 'greedy') * 100)}%`.padStart(7), avg(b, 'deep').toFixed(1).padStart(5), avg(b, 'chain').toFixed(1).padStart(6), avg(b, 'min').toFixed(1).padStart(5), avg(b, 'shuffles').toFixed(1).padStart(8));
   }
 }

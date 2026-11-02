@@ -4,11 +4,11 @@
 
 import { deadEndRatio } from './bots';
 import { difficultyScore, playerSeconds } from './economy';
-import { applyMove, canMove, cloneState, dirAllowed, fitsGate, gateFor, makeState, occupancy, replay, stranded } from './rules';
+import { applyMove, canMove, cloneState, dirAllowed, fitsGate, gateFor, narrowEnough, makeState, occupancy, replay, stranded } from './rules';
 import { analyze } from './rules';
 import { hash32, Rng } from './rng';
 import { beamSolve, solve, type SolveResult } from './solver';
-import { chainStats, depthOf, type Depth } from './depth';
+import { chainStats, depthOf, shufflesOf, type Depth } from './depth';
 import { hardStarts, withStart } from './reselect';
 import { DOT, SHAPES } from './shapes';
 import { COLORS } from './types';
@@ -26,7 +26,7 @@ import {
   type Variant,
 } from './types';
 
-export const GEN_VERSION = 9;
+export const GEN_VERSION = 10;
 
 const cache = new Map<number, { level: Level; witness: Move[] }>();
 
@@ -217,8 +217,8 @@ function build(n: number, override?: Partial<Params>): { level: Level; witness: 
   // Full trays have huge position counts: re-measure only the top one.
   const packed = params.variant === 'packed';
   // Hardest-start search: off for the first levels and warmups, which should read at a glance.
-  const reselect = n <= 3 ? 0 : params.breather ? 2 : 4;
-  for (const { draft, quick } of pool.slice(0, packed ? 1 : 3)) {
+  const reselect = n <= 3 ? 0 : params.breather ? 2 : packed ? 8 : 4;
+  for (const { draft, quick } of pool.slice(0, 3)) {
     // The tray as built, plus the hardest starts its bricks can slide into.
     const starts = reselect ? hardStarts(draft.level, 2500, reselect) : [];
     const options: { level: Level; witness: Move[]; quick: SolveResult | null }[] = [{ level: draft.level, witness: draft.witness, quick }];
@@ -262,14 +262,15 @@ export function dragsOf(moves: readonly Move[]): number {
 }
 
 /** Full score of a finished candidate: the ranking plus planning depth. Null if unsolved. */
-function evaluate(level: Level, params: Params, nodes: number, spent: { nodes: number }): { score: number; solved: SolveResult } | null {
+function evaluate(level: Level, params: Params, nodes: number, spent: { nodes: number }): { score: number; solved: SolveResult; shuffles: number } | null {
   const solved = solve(level, nodes, Infinity);
   spent.nodes += solved.nodes;
   if (!solved.solved || !replay(level, solved.moves)) return null;
   const metrics = metricsOf(level, solved.moves, solved);
   metrics.traps = countTraps(level, [solved.moves]);
   if (playerSeconds(level.n, metrics) + 0.5 >= chooseTimer(level.n, params.breather, metrics)) return null;
-  return { score: rankScore(level, metrics, solved.moves, params) + depthBonus(depthOf(level, solved.moves)), solved };
+  const depth = depthOf(level, solved.moves);
+  return { score: rankScore(level, metrics, solved.moves, params) + depthBonus(depth), solved, shuffles: depth.shuffles };
 }
 
 /** Per edit, a tray that needs more search than this to confirm is rejected. */
@@ -295,16 +296,19 @@ function polish(start: Level, startSolved: SolveResult, startScore: number, para
   let changed = false;
   // Budgets are solver nodes, not time, so a level comes out the same on every device.
   const spent = { nodes: 0 };
-  const tryEdit = (edit: (l: Level) => boolean, keepTies: boolean) => {
+  let curShuffles = shufflesOf(startSolved.moves);
+  const tryEdit = (edit: (l: Level) => boolean, keepTies: boolean, needShuffle = false) => {
     if (spent.nodes >= POLISH_BUDGET) return;
     const next = cloneLevel(cur);
     if (!edit(next)) return;
     const ev = evaluate(next, params, POLISH_NODES, spent);
     if (!ev) return;
+    if (needShuffle && ev.shuffles <= curShuffles) return;
     if (ev.score > curScore || (keepTies && ev.score >= curScore)) {
       cur = next;
       curScore = ev.score;
       curSolved = ev.solved;
+      curShuffles = ev.shuffles;
       changed = true;
     }
   };
@@ -350,6 +354,31 @@ function polish(start: Level, startSolved: SolveResult, startScore: number, para
       }
     }
   }
+  // Klotski filler: a small brick dropped in an empty cell, kept only if the solution now
+  // has to shove more bricks aside. Every brick still needs a gate it fits.
+  // Not in packed trays: their few empty cells are what the bricks shuffle through.
+  if (params.variant !== 'checker' && params.variant !== 'packed') {
+    const smalls = SHAPES.map((sh, id) => ({ sh, id })).filter(({ sh }) => sh.cells.length <= 2);
+    for (let t = 0; t < 6 && cur.pieces.length < 15; t++) {
+      const { sh, id } = rng.pick(smalls);
+      const gate = rng.pick(cur.gates);
+      if (!narrowEnough(gate, id)) continue;
+      const x = rng.int(0, cur.w - sh.w + 1);
+      const y = rng.int(0, cur.h - sh.h + 1);
+      tryEdit((l) => {
+        const s0 = makeState(l);
+        s0.clears = l.pieces.length;
+        const occ = occupancy(l, s0);
+        const paint = new Set((l.paint ?? []).map((tl) => tl.y * l.w + tl.x));
+        for (const [dx, dy] of sh.cells) {
+          const c = (y + dy) * l.w + x + dx;
+          if (occ[c] !== 0 || paint.has(c) || l.rooms.some((r) => inRoom(r, x + dx, y + dy))) return false;
+        }
+        l.pieces.push({ shape: id, color: gate.color, x, y, ice: 0, lock: 0, keys: 0, room: -1 });
+        return true;
+      }, false, true);
+    }
+  }
   return changed ? { level: cur, solved: curSolved } : null;
 }
 
@@ -358,7 +387,8 @@ function polish(start: Level, startSolved: SolveResult, startScore: number, para
  * runs of setup slides, and trays a greedy player fails. Measured on the design report.
  */
 function depthBonus(d: Depth): number {
-  return d.deep * 3 + d.maxChain * 2 + (1 - d.greedyWins) * 12;
+  // Shuffles reward Klotski-style play: moving bricks aside so others can pass.
+  return d.deep * 3 + d.maxChain * 2 + (1 - d.greedyWins) * 12 + d.shuffles * 2.5;
 }
 
 /**
@@ -509,7 +539,7 @@ function present(level: Level, params: Params, label: Label): { hint: string; me
   let hint = 'Drag a brick out through the gate of its color. It has to fit the opening.';
   if (label === 'Milestone') hint = 'Milestone tray. Bigger and tougher than the levels around it.';
   else if (label === 'Trap') hint = 'Trap tray. An exit that looks free can use up a gate another brick needs.';
-  else if (level.variant === 'packed') hint = 'A full tray. Find the brick that can leave first.';
+  else if (level.variant === 'packed') hint = 'A tight tray with a few empty cells. Shuffle bricks aside to open a path.';
   else if (level.paint?.length) hint = 'A brick that stops on a paint tile turns that color. Two different paints cancel out.';
   else if (mechanics.includes('limited-gate')) hint = 'A gate with dots closes after that many bricks pass through.';
   else if (mechanics.includes('one-way')) hint = 'Bricks with arrows only slide the way the arrows point.';
@@ -1125,6 +1155,18 @@ function tryPacked(n: number, params: Params, rng: Rng, smaller = false): Draft 
     }
     if (!placed) return null;
   }
+  // Klotski room: lift out a few small bricks so the rest have 2-4 empty cells to shuffle through.
+  const holes = 2 + rng.int(0, 3);
+  let free = 0;
+  for (const i of rng.shuffle(level.pieces.map((_, k) => k))) {
+    if (free >= holes) break;
+    const size = SHAPES[level.pieces[i].shape].cells.length;
+    if (size > 2 || free + size > holes + 1) continue;
+    level.pieces[i].room = -2;
+    free += size;
+  }
+  level.pieces = level.pieces.filter((p) => p.room !== -2);
+  if (free < 2) return null;
   const order = level.pieces.map((_, i) => i);
   rng.shuffle(order);
   for (const i of order) {

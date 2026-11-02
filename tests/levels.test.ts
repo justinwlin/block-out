@@ -72,8 +72,10 @@ describe('generated levels', () => {
     const packed = levels.filter((l) => l.variant === 'packed' && !l.fallback);
     expect(packed.length).toBeGreaterThan(8);
     for (const l of packed) {
-      const covered = l.pieces.reduce((a, p) => a + SHAPES[p.shape].cells.length, 0);
-      expect(covered, `level ${l.n} packed`).toBe(l.w * l.h);
+      // Klotski-style: nearly full, with a few empty cells to shuffle through.
+      const empty = l.w * l.h - l.pieces.reduce((a, p) => a + SHAPES[p.shape].cells.length, 0);
+      expect(empty, `level ${l.n} packed`).toBeGreaterThanOrEqual(2);
+      expect(empty, `level ${l.n} packed`).toBeLessThanOrEqual(5);
     }
     expect(levels.some((l) => l.rooms.length > 0)).toBe(true);
     expect(levels.some((l) => l.pieces.some((p) => p.axis))).toBe(true);

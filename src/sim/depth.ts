@@ -12,6 +12,23 @@ export interface Depth {
   maxChain: number;
   /** Share of greedy playthroughs (exit when you can, else a slide that opens one) that clear the tray. */
   greedyWins: number;
+  /** Klotski-style interaction: slides that move a brick out of the way rather than toward its exit. */
+  shuffles: number;
+}
+
+/**
+ * Slides that make room: the brick's next move is not its own exit. A brick that slides
+ * then leaves is lining up; a brick that slides and stays put was moved for someone else.
+ */
+export function shufflesOf(moves: readonly Move[]): number {
+  let n = 0;
+  for (let k = 0; k < moves.length; k++) {
+    if (moves[k].exit) continue;
+    let next = -1;
+    for (let j = k + 1; j < moves.length; j++) if (moves[j].i === moves[k].i) { next = j; break; }
+    if (next < 0 || !moves[next].exit) n++;
+  }
+  return n;
 }
 
 /** True if some brick can leave right now. */
@@ -62,5 +79,5 @@ export function greedyWinRate(level: Level, minMoves: number, seeds = 6): number
 }
 
 export function depthOf(level: Level, moves: readonly Move[]): Depth {
-  return { ...chainStats(level, moves), greedyWins: greedyWinRate(level, moves.length) };
+  return { ...chainStats(level, moves), greedyWins: greedyWinRate(level, moves.length), shuffles: shufflesOf(moves) };
 }
