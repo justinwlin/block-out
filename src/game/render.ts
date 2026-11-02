@@ -353,10 +353,15 @@ function drawPiece(ctx: CanvasRenderingContext2D, g: Geom, frame: Frame, i: numb
     ctx.textBaseline = 'middle';
     ctx.fillText(col.symbol, mx, my + 1);
   }
-  if (p.keys > 0) keyGlyph(ctx, mx + cell * 0.28, my - cell * 0.28, cell * 0.16);
+
   if (frozen) iceOverlay(ctx, ox, oy, cell, live.x, live.y, shape.cells, has);
   if (frozen) badge(ctx, mx, my, String(p.ice - frame.clears), '#e7f7ff', '#1b4c5c', cell);
-  else if (locked) badge(ctx, mx, my, String(p.lock - frame.keys), '#ffe7a3', '#6a4a00', cell);
+  else if (locked) padlock(ctx, mx, my, cell, p.lock - frame.keys);
+  // Key bricks carry a key token; it moves to a corner if a count badge is already in the middle.
+  if (p.keys > 0) {
+    const busy = frozen || locked;
+    keyToken(ctx, busy ? mx + cell * 0.3 : mx, busy ? my - cell * 0.3 : my, cell * (busy ? 0.17 : 0.24));
+  }
   ctx.restore();
   ctx.restore();
 }
@@ -539,23 +544,71 @@ function badge(ctx: CanvasRenderingContext2D, x: number, y: number, text: string
   ctx.fillText(text, x, y + 1);
 }
 
-function keyGlyph(ctx: CanvasRenderingContext2D, x: number, y: number, s: number) {
+/** Round dark token with a gold key: "this brick gives a key when it leaves". */
+function keyToken(ctx: CanvasRenderingContext2D, x: number, y: number, r: number) {
   ctx.save();
-  ctx.translate(x, y);
-  ctx.fillStyle = '#ffe08a';
-  ctx.strokeStyle = '#8a5a00';
-  ctx.lineWidth = 1.4;
   ctx.beginPath();
-  ctx.arc(0, 0, s, 0, Math.PI * 2);
+  ctx.arc(x, y + r * 0.12, r, 0, Math.PI * 2);
+  ctx.fillStyle = 'rgba(0,0,0,.3)';
   ctx.fill();
-  ctx.stroke();
   ctx.beginPath();
-  ctx.moveTo(s * 0.6, 0);
-  ctx.lineTo(s * 2.1, 0);
-  ctx.lineTo(s * 2.1, s * 0.55);
-  ctx.moveTo(s * 1.5, 0);
-  ctx.lineTo(s * 1.5, s * 0.4);
+  ctx.arc(x, y, r, 0, Math.PI * 2);
+  ctx.fillStyle = '#2a2f6b';
+  ctx.fill();
+  ctx.lineWidth = Math.max(1.5, r * 0.14);
+  ctx.strokeStyle = '#ffd34d';
   ctx.stroke();
+  // Key: ring bow on the left, shaft to the right, two teeth hanging down.
+  ctx.translate(x, y);
+  ctx.rotate(-Math.PI / 4);
+  ctx.strokeStyle = '#ffd34d';
+  ctx.lineCap = 'round';
+  ctx.lineWidth = Math.max(1.6, r * 0.2);
+  ctx.beginPath();
+  ctx.arc(-r * 0.32, 0, r * 0.24, 0, Math.PI * 2);
+  ctx.moveTo(-r * 0.08, 0);
+  ctx.lineTo(r * 0.6, 0);
+  ctx.moveTo(r * 0.42, 0);
+  ctx.lineTo(r * 0.42, r * 0.24);
+  ctx.moveTo(r * 0.6, 0);
+  ctx.lineTo(r * 0.6, r * 0.3);
+  ctx.stroke();
+  ctx.restore();
+}
+
+/** Gold padlock with the number of keys still needed on its body. */
+function padlock(ctx: CanvasRenderingContext2D, x: number, y: number, cell: number, left: number) {
+  const bw = cell * 0.5;
+  const bh = cell * 0.4;
+  const top = y - bh * 0.25;
+  ctx.save();
+  // Shackle.
+  ctx.beginPath();
+  ctx.arc(x, top, bw * 0.3, Math.PI, 0);
+  ctx.lineTo(x + bw * 0.3, top + bh * 0.2);
+  ctx.moveTo(x - bw * 0.3, top + bh * 0.2);
+  ctx.lineTo(x - bw * 0.3, top);
+  ctx.lineWidth = Math.max(3, cell * 0.075);
+  ctx.strokeStyle = '#4a3500';
+  ctx.stroke();
+  ctx.lineWidth = Math.max(1.5, cell * 0.04);
+  ctx.strokeStyle = '#d9dde8';
+  ctx.stroke();
+  // Body.
+  round(ctx, x - bw / 2, top + 1.5, bw, bh, cell * 0.08);
+  ctx.fillStyle = '#4a3500';
+  ctx.fill();
+  round(ctx, x - bw / 2, top, bw, bh, cell * 0.08);
+  ctx.fillStyle = '#ffd34d';
+  ctx.fill();
+  ctx.lineWidth = Math.max(1.5, cell * 0.03);
+  ctx.strokeStyle = '#4a3500';
+  ctx.stroke();
+  ctx.fillStyle = '#4a3500';
+  ctx.font = `700 ${Math.round(bh * 0.72)}px Fredoka, sans-serif`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(String(left), x, top + bh / 2 + 1);
   ctx.restore();
 }
 
