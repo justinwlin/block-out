@@ -37,7 +37,6 @@ describe('generated levels', () => {
       expect(replay(level, found!.moves), `level ${level.n} search`).toBe(true);
       expect(playerSeconds(level.n, level.metrics), `level ${level.n} clock`).toBeLessThan(level.timer);
       expect(level.timer).toBeGreaterThanOrEqual(45);
-      expect(level.timer).toBeLessThanOrEqual(180);
     }
     expect(fallbacks).toBeLessThanOrEqual(12);
   });

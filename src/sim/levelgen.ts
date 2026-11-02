@@ -24,7 +24,7 @@ import {
   type Variant,
 } from './types';
 
-export const GEN_VERSION = 4;
+export const GEN_VERSION = 5;
 
 const cache = new Map<number, { level: Level; witness: Move[] }>();
 
@@ -87,11 +87,12 @@ export function paramsFor(n: number): Params {
   const milestone = n >= 25 && n % 25 === 0;
   const breather = n % 5 === 0 && !milestone;
   const t = breather ? Math.max(1, n - 4) : n;
-  let pieces = clamp(Math.round(3 + 8 * (1 - Math.exp(-t / 95))), 3, 11);
+  let pieces = clamp(Math.round(3 + 8 * (1 - Math.exp(-t / 70))), 3, 11);
   if (breather) pieces = Math.max(3, pieces - 1);
-  // Late game: one more brick from level 350, so difficulty keeps climbing past the curve's top.
-  if (t >= 350 && !breather) pieces = 12;
-  if (milestone) pieces = Math.min(12, pieces + 2);
+  // Late game: one more brick from level 250, so difficulty keeps climbing past the curve's top.
+  if (t >= 250 && !breather) pieces = 12;
+  if (t >= 400 && !breather) pieces = 13;
+  if (milestone) pieces = Math.min(13, pieces + 2);
   const variant = variantFor(n, breather);
   // One color for the first two levels, then a new color roughly every six levels, up to all six.
   let colors = variant === 'checker' ? 2 : t <= 2 ? 1 : clamp(2 + Math.floor((t - 3) / 6), 2, COLORS.length);
@@ -108,8 +109,8 @@ export function paramsFor(n: number): Params {
     iceGate: n >= 6,
     locks: n >= 10 && (!breather || n >= 30),
     room: variant === 'rect' && !breather && n >= 14 && n % 4 === 2,
-    minSetups: (breather ? 0 : t < 10 ? 0 : t < 24 ? 1 : t < 70 ? 2 : t < 250 ? 3 : 4) + (milestone ? 2 : 0),
-    nodes: 12000,
+    minSetups: (breather ? 0 : t < 10 ? 0 : t < 24 ? 1 : t < 70 ? 2 : t < 250 ? 3 : t < 400 ? 4 : 5) + (milestone ? 2 : 0),
+    nodes: 20000,
     milestone,
     pillars: variant === 'rect' && !breather && n >= 5 && n % 3 !== 1 ? clamp(1 + Math.floor((n - 5) / 20), 1, 3) : 0,
     oneWay: n >= 8 && variant !== 'packed' ? clamp(0.25 + n / 800, 0.25, 0.6) : 0,
@@ -144,6 +145,7 @@ function boardFor(pieces: number, variant: Variant): { w: number; h: number } {
     10: [6, 7],
     11: [7, 7],
     12: [7, 7],
+    13: [7, 8],
   };
   const [w, h] = span[pieces] ?? [8, 9];
   return { w, h };
@@ -158,12 +160,13 @@ interface Draft {
   witness: Move[];
 }
 
-function build(n: number): { level: Level; witness: Move[] } {
-  const params = paramsFor(n);
+function build(n: number, override?: Partial<Params>): { level: Level; witness: Move[] } {
+  const params = { ...paramsFor(n), ...override };
   const rng = new Rng(hash32(`block-out:${GEN_VERSION}:${n}`));
   const pool: { draft: Draft; quick: SolveResult; score: number }[] = [];
   const fail = { build: 0, witness: 0, solve: 0, timer: 0 };
-  const attempts = params.breather ? 6 : params.milestone ? 16 : params.variant === 'packed' ? 12 : 10;
+  // More candidates later in the campaign, so the hardest pick keeps getting harder.
+  const attempts = params.breather ? 6 : params.milestone ? 16 : params.variant === 'packed' ? 12 : Math.min(16, 10 + Math.floor(n / 100));
   for (let attempt = 0; attempt < attempts; attempt++) {
     const draft = params.variant === 'packed' ? tryPacked(n, params, rng, attempt >= attempts / 2) : tryBuild(n, params, rng);
     if (!draft) { fail.build++; continue; }
@@ -173,33 +176,54 @@ function build(n: number): { level: Level; witness: Move[] } {
     const metrics = metricsOf(draft.level, draft.witness, quick);
     if (playerSeconds(n, metrics) + 0.5 >= chooseTimer(n, params.breather, metrics)) { fail.timer++; continue; }
     // Meeting the setup target outranks raw score.
-    pool.push({ draft, quick, score: difficultyScore(metrics) + (metrics.setups >= params.minSetups ? 1000 : 0) });
+    pool.push({ draft, quick, score: rankScore(draft.level, metrics, quick.moves, params) });
     // Warmups stop at the first acceptable tray; everything else tries every attempt.
     if (params.breather && metrics.setups >= params.minSetups) break;
   }
   if (!pool.length) {
     if (typeof process !== 'undefined' && process.env?.GEN_DEBUG) console.log('fallback', n, fail, params);
+    // A packed tray that will not come together becomes a normal tray, not a trivial one.
+    if (params.variant === 'packed') return build(n, { variant: 'rect', oneWay: 0.4, limitGates: true, paint: 1 });
     return fallback(n, params);
   }
   // The beam ranks every candidate; the exact solver re-measures the top three and picks.
   // Node-limited, never time-limited: level N must come out the same on every device.
   pool.sort((a, b) => b.score - a.score);
   let best: { level: Level; witness: Move[]; score: number } | null = null;
-  // Full trays have huge position counts: re-measure only the top one, on a smaller budget.
+  // Full trays have huge position counts: re-measure only the top one.
   const packed = params.variant === 'packed';
   for (const { draft, quick } of pool.slice(0, packed ? 1 : 3)) {
-    const exact = solve(draft.level, packed ? 4000 : params.nodes, Infinity);
+    const exact = solve(draft.level, packed ? 8000 : params.nodes, Infinity);
     const solved = exact.solved && exact.minMoves <= quick.minMoves && replay(draft.level, exact.moves) ? exact : quick;
     const metrics = metricsOf(draft.level, draft.witness, solved);
     const timer = chooseTimer(n, params.breather, metrics);
     if (playerSeconds(n, metrics) + 0.5 >= timer) continue;
-    const score = difficultyScore(metrics) + (metrics.setups >= params.minSetups ? 1000 : 0);
+    const score = rankScore(draft.level, metrics, solved.moves, params);
     if (!best || score > best.score) {
       best = { level: finish(draft.level, metrics, timer, params), witness: draft.witness, score };
     }
   }
   if (!best) return fallback(n, params);
   return { level: best.level, witness: best.witness };
+}
+
+/**
+ * How the generator ranks candidates. Meeting the setup target outranks everything; then
+ * difficulty, plus a bonus for setup moves after a room opens, so a second room is a real
+ * puzzle rather than a victory lap.
+ */
+function rankScore(level: Level, metrics: Metrics, moves: readonly Move[], params: Params): number {
+  let score = difficultyScore(metrics) + (metrics.setups >= params.minSetups ? 1000 : 0);
+  if (level.rooms.length) {
+    const s = makeState(level);
+    let late = 0;
+    for (const m of moves) {
+      if (!m.exit && s.clears >= level.rooms[0].openAfter) late++;
+      applyMove(level, s, m);
+    }
+    score += late * 2;
+  }
+  return score;
 }
 
 /** Beam search for ranking; a tray the beam cannot clear is dropped and the next attempt runs. */
@@ -243,10 +267,11 @@ function chooseTimer(n: number, breather: boolean, m: Metrics): number {
   const need = playerSeconds(n, m);
   const pressure = clamp((breather ? 0.34 : 0.46) + n / 900, 0.34, 0.8);
   const minT = breather ? 65 : Math.min(100, 50 + Math.floor(n / 6));
-  const maxT = Math.min(180, 80 + Math.floor(n / 2.2));
+  // No ceiling: the clock grows with the puzzle instead of capping how hard a level may be.
+  const maxT = 80 + Math.floor(n / 2.2);
   let timer = Math.round(need / pressure / 5) * 5;
   timer = clamp(timer, minT, maxT);
-  if (need + 1 >= timer) timer = Math.min(180, Math.ceil((need + 5) / 5) * 5);
+  if (need + 1 >= timer) timer = Math.ceil((need + 5) / 5) * 5;
   return timer;
 }
 
@@ -306,7 +331,11 @@ function tryBuild(n: number, params: Params, rng: Rng): Draft | null {
   floor.fill(1);
   if (params.variant === 'U') carveU(floor, w, h);
   const mid = Math.floor(h / 2);
-  if (params.variant === 'chambers') for (let x = 0; x < w; x++) floor[mid * w + x] = 0;
+  if (params.variant === 'chambers') {
+    for (let x = 0; x < w; x++) floor[mid * w + x] = 0;
+    // One door in the wall, so bricks can cross between the rooms once the bottom opens.
+    floor[mid * w + rng.int(0, w)] = 1;
+  }
   carvePillars(floor, w, h, params.pillars, rng);
   let room: Room | null = null;
   let innerCount = 0;
@@ -353,10 +382,10 @@ function tryBuild(n: number, params: Params, rng: Rng): Draft | null {
   }
   if (room && innerCount) {
     room.openAfter = 0;
-    // A shutter room is a small bonus; a chamber is half the puzzle, so it keeps full difficulty.
-    const innerParams = params.variant === 'chambers' ? params : { ...params, minPark: 0, maxPark: 1, tuck: 0.2 };
-    const inner = placeGroup(level, rng, innerParams, pool, innerCount, (x, y) => inRoom(room, x, y), 0);
-    room.openAfter = outerCount;
+    // Room bricks get the level's full difficulty; the room is half the puzzle, not a bonus.
+    const inner = placeGroup(level, rng, params, pool, innerCount, (x, y) => inRoom(room, x, y), 0);
+    // Open one clear early, so the last outside brick is still in play when the room opens.
+    room.openAfter = outerCount >= 3 ? outerCount - 1 : outerCount;
     if (!inner) return null;
     for (const p of level.pieces) if (inRoom(room, p.x, p.y)) p.room = 0;
     witness.push(...inner);
@@ -640,7 +669,7 @@ function decorate(level: Level, witness: Move[], rng: Rng, params: Params): bool
     }
     const candidates: number[] = [];
     for (let i = 0; i < level.pieces.length; i++) {
-      if (level.pieces[i].keys || level.pieces[i].room >= 0) continue;
+      if (level.pieces[i].keys) continue;
       if (keysBefore[i] > 0) candidates.push(i);
     }
     if (candidates.length) {
@@ -655,7 +684,10 @@ function decorate(level: Level, witness: Move[], rng: Rng, params: Params): bool
 
   if (params.ice) {
     for (let i = 0; i < level.pieces.length; i++) {
-      if (level.pieces[i].room >= 0 || level.pieces[i].lock > 0) continue;
+      const p = level.pieces[i];
+      if (p.lock > 0) continue;
+      // A room brick only gets ice that outlasts the shutter; otherwise it would thaw unseen.
+      if (p.room >= 0 && firstClear[i] <= level.rooms[p.room].openAfter) continue;
       if (firstClear[i] > 0 && rng.chance(iceChance(level.n))) level.pieces[i].ice = firstClear[i];
     }
   }
@@ -684,14 +716,17 @@ function iceChance(n: number): number {
  * the brick picks up its color right where it already stopped. Reverted if replay breaks.
  */
 function addPaint(level: Level, witness: Move[], rng: Rng, params: Params) {
-  const start = occupancy(level, makeState(level));
+  // Bricks at the start, rooms counted as open, so a tile never hides under a brick.
+  const s0 = makeState(level);
+  s0.clears = level.pieces.length;
+  const start = occupancy(level, s0);
   const s = makeState(level);
   const rests: { i: number; x: number; y: number }[] = [];
   const left = new Set<number>();
   for (const move of witness) {
     applyMove(level, s, move);
     if (move.exit) left.add(move.i);
-    else if (!left.has(move.i) && level.pieces[move.i].room < 0) rests.push({ i: move.i, x: s.x[move.i], y: s.y[move.i] });
+    else if (!left.has(move.i)) rests.push({ i: move.i, x: s.x[move.i], y: s.y[move.i] });
   }
   rng.shuffle(rests);
   const painted = new Set((level.paint ?? []).map((t) => t.y * level.w + t.x));

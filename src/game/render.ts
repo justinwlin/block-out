@@ -274,7 +274,9 @@ function drawGate(ctx: CanvasRenderingContext2D, g: Geom, frame: Frame, gate: Le
     ctx.restore();
     return;
   }
-  arrow(ctx, cx, cy, gate.dir, s * 0.5, deep);
+  const [lr, lg, lb] = hexToRgb(hex);
+  const lightGate = 0.299 * lr + 0.587 * lg + 0.114 * lb > 170;
+  arrow(ctx, cx, cy, gate.dir, s * 0.5, deep, lightGate ? '#1d2150' : '#ffffff');
   if (left > 0) {
     // One dot per brick the gate still lets through, lined up along the gate beside the arrow.
     const along = gate.dir === 0 || gate.dir === 2;
@@ -288,10 +290,13 @@ function drawGate(ctx: CanvasRenderingContext2D, g: Geom, frame: Frame, gate: Le
         const dy = along ? 0 : off;
         ctx.beginPath();
         ctx.arc(cx + dx, cy + dy, r, 0, Math.PI * 2);
-        ctx.fillStyle = '#ffffff';
+        // White dots on colored gates; dark dots on light gates (white, yellow) so they read.
+        const [rr, gg, bb] = hexToRgb(hex);
+        const light = 0.299 * rr + 0.587 * gg + 0.114 * bb > 170;
+        ctx.fillStyle = light ? '#1d2150' : '#ffffff';
         ctx.fill();
         ctx.lineWidth = 1.5;
-        ctx.strokeStyle = deep;
+        ctx.strokeStyle = light ? '#ffffff' : deep;
         ctx.stroke();
       }
     }
@@ -351,7 +356,7 @@ function drawPaint(ctx: CanvasRenderingContext2D, px: number, py: number, cell: 
   ctx.restore();
 }
 
-function arrow(ctx: CanvasRenderingContext2D, x: number, y: number, dir: Dir, s: number, shadow: string) {
+function arrow(ctx: CanvasRenderingContext2D, x: number, y: number, dir: Dir, s: number, shadow: string, fill = '#ffffff') {
   ctx.save();
   ctx.translate(x, y);
   ctx.rotate((dir - 1) * Math.PI / 2);
@@ -373,8 +378,8 @@ function arrow(ctx: CanvasRenderingContext2D, x: number, y: number, dir: Dir, s:
   ctx.stroke();
   ctx.restore();
   tri();
-  ctx.fillStyle = '#ffffff';
-  ctx.strokeStyle = '#ffffff';
+  ctx.fillStyle = fill;
+  ctx.strokeStyle = fill;
   ctx.lineWidth = s * 0.18;
   ctx.fill();
   ctx.stroke();
