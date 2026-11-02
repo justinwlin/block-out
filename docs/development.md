@@ -36,6 +36,7 @@ A level that the search cannot crack is replaced by a three-brick tray and flagg
 
 ## Deploy
 
-`.github/workflows/deploy.yml` tests, builds, and pushes `dist/` to `gh-pages` on every push to `main`.
+`.github/workflows/deploy.yml` tests and builds on every push to `main`, then publishes `dist/` twice:
 
-GitHub Pages: Settings → Pages → Deploy from a branch → `gh-pages` → `/ (root)`. The site is https://justinwlin.github.io/block-out/.
+- **Cloudflare Pages** (primary): https://block-out-ekg.pages.dev/, project `block-out`. Needs repo secrets `CLOUDFLARE_API_TOKEN` (permission: Account → Cloudflare Pages → Edit) and `CLOUDFLARE_ACCOUNT_ID`; the step is skipped without the token. `public/_headers` serves `index.html`, `sw.js`, and the manifest with `no-cache`, so a deploy reaches phones on the next load. Manual deploy: `npm run build && wrangler pages deploy dist --project-name=block-out --branch=main`.
+- **GitHub Pages** (mirror): the `gh-pages` branch, Settings → Pages → Deploy from a branch → `gh-pages` → `/ (root)`. The site is https://justinwlin.github.io/block-out/. GitHub serves everything with `max-age=600`, so updates can take up to 10 minutes there.

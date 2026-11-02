@@ -1,6 +1,8 @@
 # Block Out
 
-**▶ Play it: https://justinwlin.github.io/block-out/**
+**▶ Play it: https://block-out-ekg.pages.dev/**
+
+Mirror: https://justinwlin.github.io/block-out/ (GitHub Pages caches for up to 10 minutes, so updates land slower there).
 
 A sliding-brick puzzle. Drag a brick through the tray and out the gate of its color, if it fits. Clear every brick before the clock runs out. It's a PWA: phone and desktop, installs to the home screen, and plays offline.
 
