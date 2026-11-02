@@ -10,15 +10,45 @@ export function makeState(level: Level): SimState {
   const n = level.pieces.length;
   const x = new Int16Array(n);
   const y = new Int16Array(n);
+  const color = new Uint8Array(n);
   for (let i = 0; i < n; i++) {
     x[i] = level.pieces[i].x;
     y[i] = level.pieces[i].y;
+    color[i] = level.pieces[i].color;
   }
-  return { x, y, out: new Uint8Array(n), clears: 0, keys: 0 };
+  return { x, y, out: new Uint8Array(n), color, passed: new Uint8Array(level.gates.length), clears: 0, keys: 0 };
 }
 
 export function cloneState(s: SimState): SimState {
-  return { x: s.x.slice(), y: s.y.slice(), out: s.out.slice(), clears: s.clears, keys: s.keys };
+  return { x: s.x.slice(), y: s.y.slice(), out: s.out.slice(), color: s.color.slice(), passed: s.passed.slice(), clears: s.clears, keys: s.keys };
+}
+
+/** One-way bricks only slide along their axis. */
+export function dirAllowed(level: Level, piece: number, dir: Dir): boolean {
+  const axis = level.pieces[piece].axis ?? 0;
+  if (axis === 1) return dir === 1 || dir === 3;
+  if (axis === 2) return dir === 0 || dir === 2;
+  return true;
+}
+
+/** True once a limited gate has let through all the bricks it allows. */
+export function gateClosed(level: Level, s: SimState, g: number): boolean {
+  const uses = level.gates[g].uses ?? 0;
+  return uses > 0 && s.passed[g] >= uses;
+}
+
+/** A brick whose slide ends with any cell on a paint tile takes that tile's color. */
+export function settlePaint(level: Level, s: SimState, piece: number): void {
+  if (!level.paint?.length) return;
+  const shape = SHAPES[level.pieces[piece].shape];
+  for (const t of level.paint) {
+    for (const [dx, dy] of shape.cells) {
+      if (s.x[piece] + dx === t.x && s.y[piece] + dy === t.y) {
+        s.color[piece] = t.color;
+        return;
+      }
+    }
+  }
 }
 
 export function won(level: Level, s: SimState): boolean {
@@ -73,17 +103,19 @@ export function occupancy(level: Level, s: SimState): Uint8Array {
   return o;
 }
 
-function fitsGate(level: Level, s: SimState, piece: number, dir: Dir, x: number, y: number): boolean {
+/** Index of the open gate a brick at (x, y) would leave through going `dir`, or -1. */
+export function gateFor(level: Level, s: SimState, piece: number, dir: Dir, x: number, y: number): number {
   const shape = SHAPES[level.pieces[piece].shape];
-  const color = level.pieces[piece].color;
+  const color = s.color[piece];
   const span = dir === 0 || dir === 2 ? shape.w : shape.h;
   const along = dir === 0 || dir === 2 ? x : y;
-  for (const g of level.gates) {
-    if (g.dir !== dir || g.color !== color || g.span !== span || g.along !== along) continue;
-    if (s.clears < g.ice) continue;
-    return true;
+  for (let g = 0; g < level.gates.length; g++) {
+    const gate = level.gates[g];
+    if (gate.dir !== dir || gate.color !== color || gate.span !== span || gate.along !== along) continue;
+    if (s.clears < gate.ice || gateClosed(level, s, g)) continue;
+    return g;
   }
-  return false;
+  return -1;
 }
 
 /**
@@ -92,6 +124,7 @@ function fitsGate(level: Level, s: SimState, piece: number, dir: Dir, x: number,
  * `exitAt` is the distance that leaves through a fitting gate, or 0.
  */
 export function analyze(level: Level, s: SimState, occ: Uint8Array, piece: number, dir: Dir): { max: number; exitAt: number } {
+  if (!dirAllowed(level, piece, dir)) return { max: 0, exitAt: 0 };
   const shape = SHAPES[level.pieces[piece].shape];
   const { w, h } = level;
   let max = 0;
@@ -115,7 +148,7 @@ export function analyze(level: Level, s: SimState, occ: Uint8Array, piece: numbe
     }
     if (blocked) return { max, exitAt: 0 };
     if (anyOut) {
-      if (fitsGate(level, s, piece, dir, nx, ny)) return { max, exitAt: step };
+      if (gateFor(level, s, piece, dir, nx, ny) >= 0) return { max, exitAt: step };
       return { max, exitAt: 0 };
     }
     max = step;
@@ -139,6 +172,9 @@ export function legalMoves(level: Level, s: SimState): Move[] {
 
 export function applyMove(level: Level, s: SimState, move: Move): void {
   if (move.exit) {
+    // An exit's `dist` is the step that carries the brick off the tray, so the gate is there.
+    const g = gateFor(level, s, move.i, move.dir, s.x[move.i] + DX[move.dir] * move.dist, s.y[move.i] + DY[move.dir] * move.dist);
+    if (g >= 0) s.passed[g]++;
     s.out[move.i] = 1;
     s.clears++;
     s.keys += level.pieces[move.i].keys;
@@ -146,6 +182,7 @@ export function applyMove(level: Level, s: SimState, move: Move): void {
   }
   s.x[move.i] += DX[move.dir] * move.dist;
   s.y[move.i] += DY[move.dir] * move.dist;
+  settlePaint(level, s, move.i);
 }
 
 /** Take every exit that is already a straight drag, lowest piece id first. */
@@ -187,8 +224,9 @@ export function replay(level: Level, moves: readonly Move[]): boolean {
 export function stateKey(s: SimState): bigint {
   let k = 0n;
   for (let i = 0; i < s.x.length; i++) {
-    const packed = s.out[i] ? 0x1ff : ((s.x[i] & 15) << 4) | (s.y[i] & 15);
-    k = (k << 9n) | BigInt(packed);
+    const packed = s.out[i] ? 0xfff : ((s.color[i] & 7) << 8) | ((s.x[i] & 15) << 4) | (s.y[i] & 15);
+    k = (k << 12n) | BigInt(packed);
   }
+  for (let g = 0; g < s.passed.length; g++) k = (k << 3n) | BigInt(s.passed[g] & 7);
   return k;
 }

@@ -5,8 +5,8 @@ export type Dir = 0 | 1 | 2 | 3;
 export const DX = [0, 1, 0, -1] as const;
 export const DY = [-1, 0, 1, 0] as const;
 
-export type Label = 'Warmup' | 'Normal' | 'Hard' | 'Super Hard';
-export type Variant = 'rect' | 'U' | 'chambers' | 'checker';
+export type Label = 'Warmup' | 'Normal' | 'Hard' | 'Super Hard' | 'Milestone';
+export type Variant = 'rect' | 'U' | 'chambers' | 'checker' | 'packed';
 
 export interface Shape {
   name: string;
@@ -25,6 +25,8 @@ export interface Gate {
   color: number;
   /** Clears required before the gate accepts a brick. */
   ice: number;
+  /** Bricks the gate lets through before it closes. 0 or missing: unlimited. */
+  uses?: number;
 }
 
 export interface PieceDef {
@@ -40,6 +42,15 @@ export interface PieceDef {
   keys: number;
   /** Room index, or -1 if the brick starts on the tray. */
   room: number;
+  /** One-way brick: 1 slides only east/west, 2 only north/south. 0 or missing: any direction. */
+  axis?: number;
+}
+
+/** A floor cell that recolors any brick whose slide ends on it. */
+export interface Paint {
+  x: number;
+  y: number;
+  color: number;
 }
 
 export interface Room {
@@ -88,12 +99,17 @@ export interface Level {
   metrics: Metrics;
   /** True when every interesting attempt failed and a trivial tray shipped. */
   fallback: boolean;
+  paint?: Paint[];
 }
 
 export interface SimState {
   x: Int16Array;
   y: Int16Array;
   out: Uint8Array;
+  /** Current color of each brick; paint tiles change it. */
+  color: Uint8Array;
+  /** Bricks each gate has let through, for gates with a use limit. */
+  passed: Uint8Array;
   clears: number;
   keys: number;
 }

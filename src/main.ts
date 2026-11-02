@@ -5,7 +5,7 @@ import { registerSW } from 'virtual:pwa-register';
 import { stars, tickClock, winCoins } from './sim/economy';
 import { feedback } from './sim/feel';
 import { generateLevel } from './sim/levelgen';
-import { applyMove, analyze, canMove, makeState, occupancy, pieceActive, won } from './sim/rules';
+import { applyMove, analyze, canMove, makeState, occupancy, pieceActive, settlePaint, won } from './sim/rules';
 import { SHAPES } from './sim/shapes';
 import { DX, DY, type Dir, type Level, type SimState } from './sim/types';
 import { AudioBus } from './game/audio';
@@ -129,10 +129,12 @@ function fit(s: Session) {
   s.geom = geomFor(window.innerWidth, window.innerHeight, s.level.w, s.level.h, safe.top, safe.bot);
 }
 
-function freshFrame(level: Level, live: Live[]): Frame {
+function freshFrame(level: Level, live: Live[], sim: SimState): Frame {
   return {
     level,
     pieces: live,
+    colors: sim.color,
+    passed: sim.passed,
     clears: 0,
     keys: 0,
     shake: 0,
@@ -159,6 +161,8 @@ function startLevel(n: number, resume = false) {
     }
     sim.clears = snap.out.reduce((a, b) => a + (b ? 1 : 0), 0);
     sim.keys = level.pieces.reduce((a, p, i) => a + (snap.out[i] ? p.keys : 0), 0);
+    if (snap.color?.length === sim.color.length) sim.color.set(snap.color);
+    if (snap.passed?.length === sim.passed.length) sim.passed.set(snap.passed);
   }
   const live = level.pieces.map((_, i) => ({ x: sim.x[i], y: sim.y[i], tx: sim.x[i], ty: sim.y[i], out: !!sim.out[i], lift: 0, flash: 0, squash: 0 }));
   session = {
@@ -172,7 +176,7 @@ function startLevel(n: number, resume = false) {
     exiting: null,
     over: false,
     geom: geomFor(1, 1, 1, 1, 0, 0),
-    frame: freshFrame(level, live),
+    frame: freshFrame(level, live, sim),
     hintFor: 2.6,
     gained: 0,
   };
@@ -182,6 +186,8 @@ function startLevel(n: number, resume = false) {
   mode = 'play';
   hintEl.textContent = level.hint;
   renderChrome();
+  // Build the next level in the background so "Next" opens instantly.
+  setTimeout(() => generateLevel(n + 1), 900);
 }
 
 function juice(kind: string) {
@@ -225,8 +231,9 @@ function finishExit(s: Session, i: number) {
   const beforeC = s.sim.clears;
   const beforeK = s.sim.keys;
   const c = gatePoint(s, i, s.exiting?.dir ?? 0);
-  const col = paintColor(s.level, s.level.pieces[i].color);
-  applyMove(s.level, s.sim, { i, dir: 0, dist: 1, exit: true });
+  const col = paintColor(s.level, s.sim.color[i]);
+  // The brick sits on its last on-tray cell; one step in the exit direction crosses the gate.
+  applyMove(s.level, s.sim, { i, dir: s.exiting?.dir ?? 0, dist: 1, exit: true });
   s.live[i].out = true;
   s.frame.clears = s.sim.clears;
   s.frame.keys = s.sim.keys;
@@ -245,7 +252,7 @@ function sprayVoxels(s: Session, ex: ExitAnim, passed: number) {
   if (save.settings.reduceMotion || passed <= ex.spawned) return;
   const p = s.level.pieces[ex.i];
   const shape = SHAPES[p.shape];
-  const col = paintColor(s.level, p.color);
+  const col = paintColor(s.level, s.sim.color[ex.i]);
   const { cell, ox, oy } = s.geom;
   const wall = wallFor(cell);
   const vertical = ex.dir === 0 || ex.dir === 2;
@@ -408,8 +415,15 @@ function releaseDrag(s: Session, d: Drag) {
   live.tx = nx;
   live.ty = ny;
   if (changed) {
-    audio.play('tick');
-    haptics.pulse(8);
+    const before = s.sim.color[d.i];
+    settlePaint(s.level, s.sim, d.i);
+    if (s.sim.color[d.i] !== before) {
+      live.flash = 1;
+      juice('unlock');
+    } else {
+      audio.play('tick');
+      haptics.pulse(8);
+    }
   }
 }
 
@@ -515,6 +529,8 @@ function snapshotOf(s: Session): Snapshot {
     timeLeft: s.timeLeft,
     freeze: s.freeze,
     boosters: s.boosters,
+    color: Array.from(s.sim.color),
+    passed: Array.from(s.sim.passed),
   };
 }
 

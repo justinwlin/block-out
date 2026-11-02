@@ -43,6 +43,9 @@ export interface Frame {
   particles: Particle[];
   texts: Floater[];
   dragId: number;
+  /** Live brick colors (paint changes them) and gate pass counts, from the sim. */
+  colors: ArrayLike<number>;
+  passed: ArrayLike<number>;
   /** Brick currently sliding out through a gate, or -1. */
   exitId: number;
   hoverId: number;
@@ -126,8 +129,7 @@ export function render(ctx: CanvasRenderingContext2D, g: Geom, frame: Frame) {
       const px = ox + x * cell;
       const py = oy + y * cell;
       if (!level.floor[y * level.w + x]) {
-        ctx.fillStyle = '#4e57ae';
-        ctx.fillRect(px - 0.5, py - 0.5, cell + 1, cell + 1);
+        drawBlock(ctx, px, py, cell);
         continue;
       }
       const checker = level.variant === 'checker' && (x + y) % 2 === 0;
@@ -137,13 +139,14 @@ export function render(ctx: CanvasRenderingContext2D, g: Geom, frame: Frame) {
       ctx.fill();
     }
   }
+  for (const t of level.paint ?? []) drawPaint(ctx, ox + t.x * cell, oy + t.y * cell, cell, paintColor(level, t.color));
   const isg = ctx.createLinearGradient(0, oy - lip, 0, oy + cell * 0.3);
   isg.addColorStop(0, 'rgba(0,0,0,.4)');
   isg.addColorStop(1, 'rgba(0,0,0,0)');
   ctx.fillStyle = isg;
   ctx.fillRect(ox - lip, oy - lip, bw + lip * 2, cell * 0.3);
 
-  for (const gate of level.gates) drawGate(ctx, g, frame, gate);
+  level.gates.forEach((gate, gi) => drawGate(ctx, g, frame, gate, gi));
 
   // Bricks are clipped to the floor so a brick leaving slides under its gate.
   ctx.save();
@@ -199,7 +202,7 @@ export function render(ctx: CanvasRenderingContext2D, g: Geom, frame: Frame) {
   ctx.globalAlpha = 1;
 }
 
-function drawGate(ctx: CanvasRenderingContext2D, g: Geom, frame: Frame, gate: Level['gates'][number]) {
+function drawGate(ctx: CanvasRenderingContext2D, g: Geom, frame: Frame, gate: Level['gates'][number], gi: number) {
   const { cell, ox, oy } = g;
   const { level } = frame;
   const col = paintColor(level, gate.color);
@@ -217,8 +220,11 @@ function drawGate(ctx: CanvasRenderingContext2D, g: Geom, frame: Frame, gate: Le
   if (gate.dir === 2) { x = ox + gate.along * cell + inset; y = oy + level.h * cell + lip; w = span - inset * 2; h = thick; }
   if (gate.dir === 3) { x = ox - lip - thick; y = oy + gate.along * cell + inset; w = thick; h = span - inset * 2; }
   if (gate.dir === 1) { x = ox + level.w * cell + lip; y = oy + gate.along * cell + inset; w = thick; h = span - inset * 2; }
-  const hex = iced ? '#d6eef7' : col.hex;
-  const deep = iced ? '#7fa9b9' : col.deep;
+  const uses = gate.uses ?? 0;
+  const left = uses ? Math.max(0, uses - (frame.passed[gi] ?? 0)) : -1;
+  const closed = left === 0;
+  const hex = closed ? '#5b6190' : iced ? '#d6eef7' : col.hex;
+  const deep = closed ? '#2c3062' : iced ? '#7fa9b9' : col.deep;
   const r = Math.max(4, Math.min(w, h) * 0.28);
   const d = Math.max(2, cell * 0.05);
   round(ctx, x, y, w, h, r);
@@ -250,7 +256,99 @@ function drawGate(ctx: CanvasRenderingContext2D, g: Geom, frame: Frame, gate: Le
     return;
   }
   // One arrow, centered: the gate reads as a door, not a pattern.
-  arrow(ctx, x + w / 2, y + (h - d) / 2, gate.dir, s * 0.5, deep);
+  const cx = x + w / 2;
+  const cy = y + (h - d) / 2;
+  if (closed) {
+    // Shut: a bold X instead of the arrow.
+    ctx.save();
+    ctx.strokeStyle = '#c9cce6';
+    ctx.lineCap = 'round';
+    ctx.lineWidth = Math.max(2.5, s * 0.14);
+    const r = s * 0.22;
+    ctx.beginPath();
+    ctx.moveTo(cx - r, cy - r);
+    ctx.lineTo(cx + r, cy + r);
+    ctx.moveTo(cx + r, cy - r);
+    ctx.lineTo(cx - r, cy + r);
+    ctx.stroke();
+    ctx.restore();
+    return;
+  }
+  arrow(ctx, cx, cy, gate.dir, s * 0.5, deep);
+  if (left > 0) {
+    // One dot per brick the gate still lets through, lined up along the gate beside the arrow.
+    const along = gate.dir === 0 || gate.dir === 2;
+    const r = Math.max(3, s * 0.15);
+    const gap = r * 2.6;
+    const start = s * 0.55;
+    for (let k = 0; k < left; k++) {
+      for (const side of [-1, 1]) {
+        const off = side * (start + k * gap);
+        const dx = along ? off : 0;
+        const dy = along ? 0 : off;
+        ctx.beginPath();
+        ctx.arc(cx + dx, cy + dy, r, 0, Math.PI * 2);
+        ctx.fillStyle = '#ffffff';
+        ctx.fill();
+        ctx.lineWidth = 1.5;
+        ctx.strokeStyle = deep;
+        ctx.stroke();
+      }
+    }
+  }
+}
+
+/** A fixed block: the frame's color, raised, filling the cell. */
+function drawBlock(ctx: CanvasRenderingContext2D, px: number, py: number, cell: number) {
+  const inset = Math.max(1, cell * 0.02);
+  const r = cell * 0.12;
+  const d = Math.max(3, cell * 0.08);
+  round(ctx, px + inset, py + inset, cell - inset * 2, cell - inset * 2, r);
+  ctx.fillStyle = '#2f3678';
+  ctx.fill();
+  round(ctx, px + inset, py + inset, cell - inset * 2, cell - inset * 2 - d, r);
+  const gr = ctx.createLinearGradient(0, py, 0, py + cell);
+  gr.addColorStop(0, '#6e78cf');
+  gr.addColorStop(1, '#4c55a8');
+  ctx.fillStyle = gr;
+  ctx.fill();
+  // Four rivets so it reads as fixed hardware, not a brick.
+  ctx.fillStyle = 'rgba(20,24,70,.45)';
+  for (const fx of [0.24, 0.76]) {
+    for (const fy of [0.22, 0.68]) {
+      ctx.beginPath();
+      ctx.arc(px + cell * fx, py + cell * fy, cell * 0.045, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+}
+
+/** A paint tile: a splash of its color with a white ring, drawn on the floor. */
+function drawPaint(ctx: CanvasRenderingContext2D, px: number, py: number, cell: number, col: { hex: string; deep: string }) {
+  const cx = px + cell / 2;
+  const cy = py + cell / 2;
+  const r = cell * 0.3;
+  ctx.save();
+  ctx.beginPath();
+  // Blobby splash: a circle with six bumps.
+  for (let k = 0; k <= 48; k++) {
+    const a = (k / 48) * Math.PI * 2;
+    const rr = r * (1 + 0.16 * Math.sin(a * 6));
+    const x = cx + Math.cos(a) * rr;
+    const y = cy + Math.sin(a) * rr;
+    if (k === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  }
+  ctx.closePath();
+  ctx.fillStyle = col.hex;
+  ctx.fill();
+  ctx.lineWidth = Math.max(2, cell * 0.04);
+  ctx.strokeStyle = '#ffffff';
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.arc(cx - r * 0.3, cy - r * 0.3, r * 0.22, 0, Math.PI * 2);
+  ctx.fillStyle = 'rgba(255,255,255,.55)';
+  ctx.fill();
+  ctx.restore();
 }
 
 function arrow(ctx: CanvasRenderingContext2D, x: number, y: number, dir: Dir, s: number, shadow: string) {
@@ -288,7 +386,7 @@ function drawPiece(ctx: CanvasRenderingContext2D, g: Geom, frame: Frame, i: numb
   const p = frame.level.pieces[i];
   const live = frame.pieces[i];
   const shape = SHAPES[p.shape];
-  const col = paintColor(frame.level, p.color);
+  const col = paintColor(frame.level, frame.colors[i] ?? p.color);
   const dragging = frame.dragId === i;
   const hot = dragging || frame.hoverId === i;
   const lift = live.lift;
@@ -356,6 +454,8 @@ function drawPiece(ctx: CanvasRenderingContext2D, g: Geom, frame: Frame, i: numb
   }
 
   if (frozen) iceOverlay(ctx, ox, oy, cell, live.x, live.y, shape.cells, has);
+  // Under any count badge; the arrow tips stay visible past the badge's edge.
+  if (p.axis) axisArrows(ctx, mx, my, cell, p.axis, col.deep);
   if (frozen) badge(ctx, mx, my, String(p.ice - frame.clears), '#e7f7ff', '#1b4c5c', cell);
   else if (locked) padlock(ctx, mx, my, cell, p.lock - frame.keys);
   // Key bricks carry a key token; it moves to a corner if a count badge is already in the middle.
@@ -543,6 +643,37 @@ function badge(ctx: CanvasRenderingContext2D, x: number, y: number, text: string
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   ctx.fillText(text, x, y + 1);
+}
+
+/** One-way marker: a double-headed arrow along the brick's only axis. */
+function axisArrows(ctx: CanvasRenderingContext2D, x: number, y: number, cell: number, axis: number, deep: string) {
+  ctx.save();
+  ctx.translate(x, y);
+  if (axis === 2) ctx.rotate(Math.PI / 2);
+  const L = cell * 0.4;
+  const head = cell * 0.13;
+  const path = () => {
+    ctx.beginPath();
+    ctx.moveTo(-L, 0);
+    ctx.lineTo(L, 0);
+    ctx.moveTo(-L + head, -head);
+    ctx.lineTo(-L, 0);
+    ctx.lineTo(-L + head, head);
+    ctx.moveTo(L - head, -head);
+    ctx.lineTo(L, 0);
+    ctx.lineTo(L - head, head);
+  };
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  path();
+  ctx.strokeStyle = deep;
+  ctx.lineWidth = Math.max(5, cell * 0.11);
+  ctx.stroke();
+  path();
+  ctx.strokeStyle = '#ffffff';
+  ctx.lineWidth = Math.max(2.5, cell * 0.055);
+  ctx.stroke();
+  ctx.restore();
 }
 
 /** Round dark token with a gold key: "this brick gives a key when it leaves". */

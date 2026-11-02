@@ -20,6 +20,9 @@ export interface Snapshot {
   timeLeft: number;
   freeze: number;
   boosters: number;
+  /** Brick colors after paint, and gate pass counts. Missing in older snapshots. */
+  color?: number[];
+  passed?: number[];
 }
 
 export interface Save {

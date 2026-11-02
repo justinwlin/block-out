@@ -66,7 +66,7 @@ class Heap {
 /**
  * Setup slides the search is allowed to try. Every maximal slide, plus any
  * shorter one that lines the brick up with a gate. That is the Rush Hour
- * macro-move set with the extra stops this ruleset needs for a fit.
+ * macro-move set with the extra stops this ruleset needs for a fit or a paint tile.
  */
 function setupSlides(level: Level, s: SimState): Move[] {
   const occ = occupancy(level, s);
@@ -80,7 +80,7 @@ function setupSlides(level: Level, s: SimState): Move[] {
       const dists = new Set<number>([a.max]);
       if (dir === 1 || dir === 3) {
         for (const g of level.gates) {
-          if (g.color !== level.pieces[i].color || g.span !== shape.w) continue;
+          if (g.color !== s.color[i] || g.span !== shape.w) continue;
           if (g.dir !== 0 && g.dir !== 2) continue;
           const delta = g.along - s.x[i];
           const dist = dir === 1 ? delta : -delta;
@@ -88,11 +88,19 @@ function setupSlides(level: Level, s: SimState): Move[] {
         }
       } else {
         for (const g of level.gates) {
-          if (g.color !== level.pieces[i].color || g.span !== shape.h) continue;
+          if (g.color !== s.color[i] || g.span !== shape.h) continue;
           if (g.dir !== 1 && g.dir !== 3) continue;
           const delta = g.along - s.y[i];
           const dist = dir === 2 ? delta : -delta;
           if (dist >= 1 && dist <= a.max) dists.add(dist);
+        }
+      }
+      // Stops that land a cell on a paint tile, since stopping there recolors the brick.
+      for (const t of level.paint ?? []) {
+        for (const [dx, dy] of shape.cells) {
+          const dist = dir === 1 ? t.x - (s.x[i] + dx) : dir === 3 ? s.x[i] + dx - t.x : dir === 2 ? t.y - (s.y[i] + dy) : s.y[i] + dy - t.y;
+          const lined = dir === 1 || dir === 3 ? s.y[i] + dy === t.y : s.x[i] + dx === t.x;
+          if (lined && dist >= 1 && dist <= a.max) dists.add(dist);
         }
       }
       for (const dist of dists) moves.push({ i, dir, dist, exit: false });
@@ -102,14 +110,14 @@ function setupSlides(level: Level, s: SimState): Move[] {
 }
 
 /** Bounded beam over setup slides. Finds a solution without proving it shortest. */
-export function beamSolve(level: Level, width = 36): SolveResult | null {
+export function beamSolve(level: Level, width = 36, depthLimit = 7): SolveResult | null {
   const prefix: Move[] = [];
   const start = makeState(level);
   takeFreeExits(level, start, prefix);
   if (won(level, start)) return finish(level, prefix, 1);
   let layer: { s: SimState; moves: Move[] }[] = [{ s: start, moves: [...prefix] }];
   const seen = new Set<bigint>([stateKey(start)]);
-  for (let depth = 0; depth < 7 && layer.length; depth++) {
+  for (let depth = 0; depth < depthLimit && layer.length; depth++) {
     const next: { s: SimState; moves: Move[]; left: number }[] = [];
     for (const node of layer) {
       for (const slide of setupSlides(level, node.s)) {

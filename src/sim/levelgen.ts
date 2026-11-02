@@ -4,7 +4,7 @@
 
 import { deadEndRatio } from './bots';
 import { difficultyScore, playerSeconds } from './economy';
-import { applyMove, makeState, occupancy, replay } from './rules';
+import { applyMove, gateFor, makeState, occupancy, replay } from './rules';
 import { analyze } from './rules';
 import { hash32, Rng } from './rng';
 import { beamSolve, solve } from './solver';
@@ -24,7 +24,7 @@ import {
   type Variant,
 } from './types';
 
-export const GEN_VERSION = 2;
+export const GEN_VERSION = 3;
 
 const cache = new Map<number, { level: Level; witness: Move[] }>();
 
@@ -67,6 +67,16 @@ interface Params {
   room: boolean;
   minSetups: number;
   nodes: number;
+  /** Every 25th level: bigger, harder, labeled Milestone. */
+  milestone: boolean;
+  /** Fixed blocks carved into the floor. */
+  pillars: number;
+  /** Chance an eligible brick becomes one-way. */
+  oneWay: number;
+  /** Gates may get a use limit. */
+  limitGates: boolean;
+  /** Paint tiles to try to place. */
+  paint: number;
 }
 
 function clamp(n: number, lo: number, hi: number): number {
@@ -74,10 +84,12 @@ function clamp(n: number, lo: number, hi: number): number {
 }
 
 export function paramsFor(n: number): Params {
-  const breather = n % 5 === 0;
+  const milestone = n >= 25 && n % 25 === 0;
+  const breather = n % 5 === 0 && !milestone;
   const t = breather ? Math.max(1, n - 4) : n;
   let pieces = clamp(Math.round(3 + 8 * (1 - Math.exp(-t / 95))), 3, 11);
   if (breather) pieces = Math.max(3, pieces - 1);
+  if (milestone) pieces = Math.min(11, pieces + 2);
   const variant = variantFor(n, breather);
   // One color for the first two levels, then a new color roughly every six levels, up to all six.
   let colors = variant === 'checker' ? 2 : t <= 2 ? 1 : clamp(2 + Math.floor((t - 3) / 6), 2, COLORS.length);
@@ -94,13 +106,21 @@ export function paramsFor(n: number): Params {
     iceGate: n >= 6,
     locks: n >= 10 && (!breather || n >= 30),
     room: variant === 'rect' && !breather && n >= 14 && n % 4 === 2,
-    minSetups: breather ? 0 : t < 10 ? 0 : t < 24 ? 1 : t < 70 ? 2 : 3,
+    minSetups: (breather ? 0 : t < 10 ? 0 : t < 24 ? 1 : t < 70 ? 2 : t < 250 ? 3 : 4) + (milestone ? 2 : 0),
     nodes: 4000,
+    milestone,
+    pillars: variant === 'rect' && !breather && n >= 5 && n % 3 !== 1 ? clamp(1 + Math.floor((n - 5) / 20), 1, 3) : 0,
+    oneWay: n >= 8 && variant !== 'packed' ? clamp(0.25 + n / 800, 0.25, 0.6) : 0,
+    limitGates: n >= 12 && variant !== 'packed',
+    paint: n >= 16 && colors >= 2 && variant !== 'checker' && variant !== 'packed' ? (n >= 60 && !breather ? 2 : 1) : 0,
   };
 }
 
 function variantFor(n: number, breather: boolean): Variant {
+  if (n >= 25 && n % 25 === 0) return 'rect';
   if (n >= 9 && n % 10 === 9) return 'checker';
+  // Packed: every brick starts on the board with no empty cells.
+  if (n >= 7 && n % 10 === 7) return 'packed';
   if (!breather && n >= 18 && n % 9 === 0) return 'chambers';
   if (!breather && n >= 14 && n % 7 === 0) return 'U';
   return 'rect';
@@ -141,11 +161,14 @@ function build(n: number): { level: Level; witness: Move[] } {
   let best: Draft | null = null;
   let bestScore = -Infinity;
   const fail = { build: 0, witness: 0, solve: 0, timer: 0 };
-  for (let attempt = 0; attempt < (params.breather ? 6 : 10); attempt++) {
-    const draft = tryBuild(n, params, rng);
+  const attempts = params.breather ? 6 : params.milestone ? 16 : params.variant === 'packed' ? 12 : 10;
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    const draft = params.variant === 'packed' ? tryPacked(n, params, rng) : tryBuild(n, params, rng);
     if (!draft) { fail.build++; continue; }
     if (!replay(draft.level, draft.witness)) { fail.witness++; continue; }
-    const beam = beamSolve(draft.level);
+    // Detours through paint and milestone trays need a deeper search.
+    const deep = params.milestone || params.paint >= 2 || params.variant === 'packed';
+    const beam = beamSolve(draft.level, deep ? 48 : 36, deep ? 11 : 7);
     const exact = beam?.solved ? solve(draft.level, params.nodes, 20) : null;
     const solved = exact?.solved ? exact : beam;
     if (!solved?.solved || !replay(draft.level, solved.moves)) { fail.solve++; continue; }
@@ -208,6 +231,7 @@ function chooseTimer(n: number, breather: boolean, m: Metrics): number {
 
 function labelFor(n: number, breather: boolean, m: Metrics): Label {
   if (breather) return 'Warmup';
+  if (n >= 25 && n % 25 === 0) return 'Milestone';
   const score = difficultyScore(m);
   if (n >= 80 && score >= 48) return 'Super Hard';
   if (score >= 24) return 'Hard';
@@ -228,8 +252,22 @@ function present(level: Level, params: Params, label: Label): { hint: string; me
   if (level.gates.some((g) => g.ice > 0)) mechanics.push('ice-gate');
   if (level.pieces.some((p) => p.lock > 0)) mechanics.push('lock');
   if (level.rooms.length) mechanics.push('room');
+  if (level.pieces.some((p) => p.axis)) mechanics.push('one-way');
+  if (level.gates.some((g) => g.uses)) mechanics.push('limited-gate');
+  if (level.paint?.length) mechanics.push('paint');
+  if (level.variant === 'packed') mechanics.push('packed');
+  for (let i = 0; i < level.floor.length; i++) {
+    const x = i % level.w;
+    const y = Math.floor(i / level.w);
+    if (!level.floor[i] && level.variant === 'rect' && x > 0 && y > 0 && x < level.w - 1 && y < level.h - 1) { mechanics.push('pillars'); break; }
+  }
   let hint = 'Drag a brick out through the gate of its color. It has to fit the opening.';
-  if (level.variant === 'chambers') hint = 'Two rooms. Clear the top one and the shutter lifts on the bottom.';
+  if (label === 'Milestone') hint = 'Milestone tray. Bigger and tougher than the levels around it.';
+  else if (level.variant === 'packed') hint = 'A full tray. Find the brick that can leave first.';
+  else if (level.paint?.length) hint = 'A brick that stops on a paint tile turns that color.';
+  else if (mechanics.includes('limited-gate')) hint = 'A gate with dots closes after that many bricks pass through.';
+  else if (mechanics.includes('one-way')) hint = 'Bricks with arrows only slide the way the arrows point.';
+  else if (level.variant === 'chambers') hint = 'Two rooms. Clear the top one and the shutter lifts on the bottom.';
   else if (level.rooms.length) hint = 'The crowned shutter opens when its count hits zero, and more bricks come with it.';
   else if (mechanics.includes('lock')) hint = 'A padlock stays put until enough key bricks have left.';
   else if (mechanics.includes('ice-gate')) hint = 'Frost on a gate melts as other bricks leave.';
@@ -248,6 +286,7 @@ function tryBuild(n: number, params: Params, rng: Rng): Draft | null {
   if (params.variant === 'U') carveU(floor, w, h);
   const mid = Math.floor(h / 2);
   if (params.variant === 'chambers') for (let x = 0; x < w; x++) floor[mid * w + x] = 0;
+  carvePillars(floor, w, h, params.pillars, rng);
   let room: Room | null = null;
   let innerCount = 0;
   if (params.variant === 'chambers') {
@@ -310,6 +349,20 @@ function tryBuild(n: number, params: Params, rng: Rng): Draft | null {
 function inRoom(room: Room | null, x: number, y: number): boolean {
   if (!room) return false;
   return x >= room.x && x < room.x + room.w && y >= room.y && y < room.y + room.h;
+}
+
+/** Fixed one-cell blocks inside the tray, never on the edge and never touching each other. */
+function carvePillars(floor: Uint8Array, w: number, h: number, count: number, rng: Rng) {
+  if (w < 4 || h < 4) return;
+  for (let k = 0, tries = 0; k < count && tries < 40; tries++) {
+    const x = rng.int(1, w - 1);
+    const y = rng.int(1, h - 1);
+    let clear = true;
+    for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) if (!floor[(y + dy) * w + x + dx]) clear = false;
+    if (!clear) continue;
+    floor[y * w + x] = 0;
+    k++;
+  }
 }
 
 function carveU(floor: Uint8Array, w: number, h: number) {
@@ -535,6 +588,7 @@ function edgeFree(level: Level, dir: Dir, along: number, span: number, region: (
 }
 
 function decorate(level: Level, witness: Move[], rng: Rng, params: Params): boolean {
+  for (let k = 0; k < params.paint; k++) addPaint(level, witness, rng, params);
   const firstClear = new Array<number>(level.pieces.length).fill(-1);
   const gateFirst = new Array<number>(level.gates.length).fill(-1);
   const exitOrder: number[] = [];
@@ -574,6 +628,7 @@ function decorate(level: Level, witness: Move[], rng: Rng, params: Params): bool
     }
   }
   if (params.locks) fixLock(level, witness);
+  if (params.oneWay > 0) addOneWay(level, witness, rng, params.oneWay);
   // Keys only mean something if a padlock survived; otherwise drop them.
   if (!level.pieces.some((p) => p.lock > 0)) for (const p of level.pieces) p.keys = 0;
 
@@ -588,6 +643,8 @@ function decorate(level: Level, witness: Move[], rng: Rng, params: Params): bool
       if (gateFirst[g] > 0 && rng.chance(iceChance(level.n) * 0.9)) level.gates[g].ice = gateFirst[g];
     }
   }
+  // Last, so frozen gates are known and skipped: a gate is either frozen or limited, not both.
+  if (params.limitGates) limitGates(level, witness, rng);
   return true;
 }
 
@@ -596,7 +653,157 @@ function decorate(level: Level, witness: Move[], rng: Rng, params: Params): bool
  * Higher rates make late trays too tangled for the solver to confirm.
  */
 function iceChance(n: number): number {
-  return clamp(0.4 + n / 200, 0.4, 0.5);
+  // Holds at 50% from level 20, then creeps up after 200 so the late game keeps tightening.
+  return clamp(0.4 + n / 200, 0.4, 0.5) + clamp((n - 200) / 2000, 0, 0.15);
+}
+
+/**
+ * Paint: pick a brick that rests somewhere before it leaves, put a tile of its color under
+ * that resting spot, and start the brick in another color. The witness still works because
+ * the brick picks up its color right where it already stopped. Reverted if replay breaks.
+ */
+function addPaint(level: Level, witness: Move[], rng: Rng, params: Params) {
+  const start = occupancy(level, makeState(level));
+  const s = makeState(level);
+  const rests: { i: number; x: number; y: number }[] = [];
+  const left = new Set<number>();
+  for (const move of witness) {
+    applyMove(level, s, move);
+    if (move.exit) left.add(move.i);
+    else if (!left.has(move.i) && level.pieces[move.i].room < 0) rests.push({ i: move.i, x: s.x[move.i], y: s.y[move.i] });
+  }
+  rng.shuffle(rests);
+  const painted = new Set((level.paint ?? []).map((t) => t.y * level.w + t.x));
+  const owners = new Set((level.paint ?? []).map((t) => t.color));
+  for (const r of rests.slice(0, 6)) {
+    const piece = level.pieces[r.i];
+    if (painted.size && owners.has(piece.color)) continue;
+    const cells = SHAPES[piece.shape].cells.map(([dx, dy]) => [r.x + dx, r.y + dy] as const).filter(([x, y]) => start[y * level.w + x] === 0 && !painted.has(y * level.w + x));
+    if (!cells.length) continue;
+    const [x, y] = rng.pick(cells);
+    const others = Array.from({ length: params.colors }, (_, c) => c).filter((c) => c !== piece.color);
+    if (!others.length) return;
+    const original = piece.color;
+    level.paint = [...(level.paint ?? []), { x, y, color: original }];
+    piece.color = rng.pick(others);
+    if (replay(level, witness)) return;
+    piece.color = original;
+    level.paint.pop();
+    if (!level.paint.length) delete level.paint;
+  }
+}
+
+/** One-way: a brick whose whole witness path runs along one axis may be locked to it. */
+function addOneWay(level: Level, witness: Move[], rng: Rng, chance: number) {
+  const horiz = new Array<boolean>(level.pieces.length).fill(true);
+  const vert = new Array<boolean>(level.pieces.length).fill(true);
+  for (const move of witness) {
+    if (move.dir === 1 || move.dir === 3) vert[move.i] = false;
+    else horiz[move.i] = false;
+  }
+  for (let i = 0; i < level.pieces.length; i++) {
+    const p = level.pieces[i];
+    if (p.lock > 0 || p.keys > 0) continue;
+    if (!rng.chance(chance)) continue;
+    if (horiz[i]) p.axis = 1;
+    else if (vert[i]) p.axis = 2;
+  }
+}
+
+/**
+ * Gate limits: a gate the witness uses k times may close after k bricks, but only when
+ * another brick of the same color and width could also have used it. That turns a
+ * spare route into a choice the player has to get right.
+ */
+function limitGates(level: Level, witness: Move[], rng: Rng) {
+  const used = new Array<number>(level.gates.length).fill(0);
+  const s = makeState(level);
+  for (const move of witness) {
+    if (move.exit) {
+      const g = gateFor(level, s, move.i, move.dir, s.x[move.i] + DX[move.dir] * move.dist, s.y[move.i] + DY[move.dir] * move.dist);
+      if (g >= 0) used[g]++;
+    }
+    applyMove(level, s, move);
+  }
+  for (let g = 0; g < level.gates.length; g++) {
+    const gate = level.gates[g];
+    if (!used[g] || used[g] > 3 || gate.ice > 0) continue;
+    const vertical = gate.dir === 0 || gate.dir === 2;
+    const fits = level.pieces.filter((p) => {
+      const sh = SHAPES[p.shape];
+      return (vertical ? sh.w : sh.h) === gate.span && (p.color === gate.color || level.paint?.some((t) => t.color === gate.color));
+    }).length;
+    if (fits > used[g] && rng.chance(0.6)) gate.uses = used[g];
+  }
+}
+
+/**
+ * Packed tray: tile the whole board with bricks, give each brick a gate in line with it
+ * (sometimes offset so it has to slide first), and keep it only if the solver clears it.
+ * The solver's line becomes the witness.
+ */
+function tryPacked(n: number, params: Params, rng: Rng): Draft | null {
+  const [w, h] = n < 40 ? [4, 5] : n < 100 ? [5, 5] : n < 200 ? [5, 6] : [6, 6];
+  const floor = new Uint8Array(w * h).fill(1);
+  const level: Level = {
+    n, w, h, floor, gates: [], pieces: [], rooms: [], timer: 60, label: 'Normal',
+    variant: 'packed', hint: '', mechanics: [], metrics: emptyMetrics(), fallback: false,
+  };
+  const pool = shapePool(n, 'rect', Math.max(w, h)).filter((id) => SHAPES[id].w <= w && SHAPES[id].h <= h);
+  const grid = new Int16Array(w * h).fill(-1);
+  for (let c = 0; c < w * h; c++) {
+    if (grid[c] >= 0) continue;
+    const cx = c % w;
+    const cy = Math.floor(c / w);
+    let placed = false;
+    for (let t = 0; t < 8 && !placed; t++) {
+      const id = t < 7 ? pickWeighted(rng, pool) : DOT;
+      const sh = SHAPES[id];
+      // cells[0] is the shape's first cell in reading order; anchor it on the empty cell.
+      const ox = cx - sh.cells[0][0];
+      const oy = cy - sh.cells[0][1];
+      if (ox < 0 || oy < 0 || ox + sh.w > w || oy + sh.h > h) continue;
+      if (!sh.cells.every(([dx, dy]) => grid[(oy + dy) * w + ox + dx] < 0)) continue;
+      const idx = level.pieces.length;
+      for (const [dx, dy] of sh.cells) grid[(oy + dy) * w + ox + dx] = idx;
+      level.pieces.push({ shape: id, color: rng.int(0, params.colors), x: ox, y: oy, ice: 0, lock: 0, keys: 0, room: -1 });
+      placed = true;
+    }
+    if (!placed) return null;
+  }
+  const order = level.pieces.map((_, i) => i);
+  rng.shuffle(order);
+  for (const i of order) {
+    const p = level.pieces[i];
+    const sh = SHAPES[p.shape];
+    const dirs: Dir[] = [0, 1, 2, 3];
+    rng.shuffle(dirs);
+    let ok = false;
+    for (const dir of dirs) {
+      const vertical = dir === 0 || dir === 2;
+      const span = vertical ? sh.w : sh.h;
+      const limit = (vertical ? w : h) - span;
+      const inLine = vertical ? p.x : p.y;
+      // In line first (or offset a third of the time), then every other spot on that side.
+      const spots = Array.from({ length: limit + 1 }, (_, a) => a).filter((a) => a !== inLine);
+      rng.shuffle(spots);
+      if (rng.chance(0.35)) spots.push(inLine); else spots.unshift(inLine);
+      for (const along of spots) {
+        const same = level.gates.find((g) => g.dir === dir && g.along === along && g.span === span && g.color === p.color);
+        if (same) { ok = true; break; }
+        const clash = level.gates.some((g) => g.dir === dir && along < g.along + g.span && g.along < along + span);
+        if (clash) continue;
+        level.gates.push({ dir, along, span, color: p.color, ice: 0 });
+        ok = true;
+        break;
+      }
+      if (ok) break;
+    }
+    if (!ok) return null;
+  }
+  const solved = beamSolve(level, 48, 11);
+  if (!solved?.solved) return null;
+  return { level, witness: solved.moves };
 }
 
 /** One locked brick, needing exactly the keys that have already left when it first moves. */
@@ -626,7 +833,7 @@ function matchGate(level: Level, s: ReturnType<typeof makeState>, move: Move): n
   const shape = SHAPES[level.pieces[move.i].shape];
   const span = move.dir === 0 || move.dir === 2 ? shape.w : shape.h;
   const along = move.dir === 0 || move.dir === 2 ? s.x[move.i] : s.y[move.i];
-  const color = level.pieces[move.i].color;
+  const color = s.color[move.i];
   return level.gates.findIndex((g) => g.dir === move.dir && g.span === span && g.along === along && g.color === color);
 }
 

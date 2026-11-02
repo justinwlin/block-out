@@ -3,6 +3,7 @@ import { replay } from '../src/sim/rules';
 import { beamSolve } from '../src/sim/solver';
 import { difficultyScore, playerSeconds } from '../src/sim/economy';
 import { clearLevelCache, generateBuilt, levelSignature } from '../src/sim/levelgen';
+import { SHAPES } from '../src/sim/shapes';
 
 const built = Array.from({ length: 500 }, (_, i) => generateBuilt(i + 1));
 const levels = built.map((b) => b.level);
@@ -31,7 +32,7 @@ describe('generated levels', () => {
     let fallbacks = 0;
     for (const { level } of built) {
       if (level.fallback) fallbacks++;
-      const found = beamSolve(level);
+      const found = beamSolve(level, 48, 11);
       expect(found?.solved, `level ${level.n}`).toBe(true);
       expect(replay(level, found!.moves), `level ${level.n} search`).toBe(true);
       expect(playerSeconds(level.n, level.metrics), `level ${level.n} clock`).toBeLessThan(level.timer);
@@ -66,8 +67,19 @@ describe('generated levels', () => {
     expect(levels.some((l) => l.variant === 'checker')).toBe(true);
     expect(levels.some((l) => l.variant === 'U')).toBe(true);
     expect(levels.some((l) => l.variant === 'chambers')).toBe(true);
+    const packed = levels.filter((l) => l.variant === 'packed' && !l.fallback);
+    expect(packed.length).toBeGreaterThan(30);
+    for (const l of packed) {
+      const covered = l.pieces.reduce((a, p) => a + SHAPES[p.shape].cells.length, 0);
+      expect(covered, `level ${l.n} packed`).toBe(l.w * l.h);
+    }
     expect(levels.some((l) => l.rooms.length > 0)).toBe(true);
+    expect(levels.some((l) => l.pieces.some((p) => p.axis))).toBe(true);
+    expect(levels.some((l) => l.gates.some((g) => g.uses))).toBe(true);
+    expect(levels.some((l) => l.paint?.length)).toBe(true);
+    expect(levels.some((l) => l.mechanics.includes('pillars'))).toBe(true);
     expect(levels.some((l) => l.pieces.some((p) => p.lock > 0))).toBe(true);
-    expect(levels.filter((l) => l.n % 5 === 0).every((l) => l.label === 'Warmup')).toBe(true);
+    expect(levels.filter((l) => l.n % 5 === 0 && l.n % 25 !== 0).every((l) => l.label === 'Warmup')).toBe(true);
+    expect(levels.filter((l) => l.n % 25 === 0).every((l) => l.label === 'Milestone')).toBe(true);
   });
 });

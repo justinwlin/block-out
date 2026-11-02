@@ -144,6 +144,53 @@ describe('boosters', () => {
   });
 });
 
+describe('one-way bricks, gate limits, paint', () => {
+  it('keeps a one-way brick on its axis', () => {
+    const level = tray({
+      w: 4, h: 4,
+      pieces: [dot(1, 1, 0, { axis: 1 })],
+      gates: [{ dir: 0, along: 1, span: 1, color: 0, ice: 0 }, { dir: 1, along: 1, span: 1, color: 0, ice: 0 }],
+    });
+    const moves = legalMoves(level, makeState(level));
+    expect(moves.every((m) => m.dir === 1 || m.dir === 3)).toBe(true);
+    expect(moves.some((m) => m.exit && m.dir === 1)).toBe(true);
+    expect(moves.some((m) => m.exit && m.dir === 0)).toBe(false);
+  });
+
+  it('closes a limited gate after its uses', () => {
+    const level = tray({
+      w: 3, h: 3,
+      pieces: [dot(0, 0, 0), dot(0, 2, 0)],
+      gates: [{ dir: 3, along: 0, span: 1, color: 0, ice: 0, uses: 1 }, { dir: 3, along: 2, span: 1, color: 0, ice: 0, uses: 1 }],
+    });
+    const s = makeState(level);
+    applyMove(level, s, { i: 0, dir: 3, dist: 1, exit: true });
+    expect(s.passed[0]).toBe(1);
+    // Brick 1 slides up to row 0, but that gate is spent; it has to use its own.
+    applyMove(level, s, { i: 1, dir: 0, dist: 2, exit: false });
+    expect(legalMoves(level, s).some((m) => m.i === 1 && m.exit)).toBe(false);
+    applyMove(level, s, { i: 1, dir: 2, dist: 2, exit: false });
+    expect(legalMoves(level, s).some((m) => m.i === 1 && m.exit && m.dir === 3)).toBe(true);
+  });
+
+  it('recolors a brick whose slide ends on paint, and the solver uses it', () => {
+    const level = tray({
+      w: 4, h: 3,
+      pieces: [dot(0, 1, 1)],
+      gates: [{ dir: 1, along: 1, span: 1, color: 0, ice: 0 }],
+    });
+    level.paint = [{ x: 2, y: 1, color: 0 }];
+    const s = makeState(level);
+    expect(legalMoves(level, s).some((m) => m.exit)).toBe(false);
+    applyMove(level, s, { i: 0, dir: 1, dist: 2, exit: false });
+    expect(s.color[0]).toBe(0);
+    expect(legalMoves(level, s).some((m) => m.exit && m.dir === 1)).toBe(true);
+    const solved = solve(level);
+    expect(solved.solved).toBe(true);
+    expect(replay(level, solved.moves)).toBe(true);
+  });
+});
+
 function applyAll(level: Level, moves: { i: number; dir: 0 | 1 | 2 | 3; dist: number; exit: boolean }[]) {
   const s = makeState(level);
   for (const m of moves) applyMove(level, s, m);
