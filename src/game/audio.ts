@@ -79,19 +79,19 @@ export class AudioBus {
       tone(390, 0.28, 'triangle', 0.05, -120);
     } else if (kind === 'clock') tone(740, 0.2, 'sine', 0.08);
     else if (kind === 'win') {
-      [523, 659, 784, 1046].forEach((f, i) => {
+      [523, 659, 784].forEach((f, i) => {
         const o = this.ctx!.createOscillator();
         const g = this.ctx!.createGain();
-        o.type = 'triangle';
+        o.type = 'sine';
         o.frequency.value = f;
-        const st = t + i * 0.09;
+        const st = t + i * 0.16;
         g.gain.setValueAtTime(0.0001, st);
-        g.gain.exponentialRampToValueAtTime(0.12, st + 0.02);
-        g.gain.exponentialRampToValueAtTime(0.0001, st + 0.22);
+        g.gain.exponentialRampToValueAtTime(0.07, st + 0.04);
+        g.gain.exponentialRampToValueAtTime(0.0001, st + 0.55);
         o.connect(g);
         g.connect(this.master!);
         o.start(st);
-        o.stop(st + 0.24);
+        o.stop(st + 0.58);
       });
     } else if (kind === 'fail') {
       tone(330, 0.2, 'triangle', 0.08, -80);

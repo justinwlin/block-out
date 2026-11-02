@@ -47,16 +47,16 @@ Boosters are convenience, never a toll. A level the solver can clear is a level 
 - Phone: touch a brick, drag along a row or a column. The axis locks after a few pixels. The piece stops when it hits something, and it leaves if the drag carries it into its gate.
 - Desktop: the same gesture with the mouse. Esc pauses. Buttons are the same size as on a phone.
 - Timer is on by default. Turn it off in Settings, or from the pause screen, to play with no clock. That hides the time and the freeze booster. Rocket and UFO stay. The switch is remembered.
-- A frozen, locked, or hidden brick rejects the grab (a tick and a tiny shake).
+- A frozen, locked, or hidden brick rejects the grab with a soft bump and a tint. The screen does not shake.
 
 ## Game feel
 
 - The drag is continuous, clamped to free cells, then snapped. A short settle plays on release.
-- An exit is a whoosh out the gate: squash, particles, a hit of screen shake, a bright blip, a haptic tick.
-- Ice cracking, a lock opening, and a shutter lifting each get their own sound and a small shake.
+- An exit eases out of the gate: a little squash, a few motes, a soft blip, a haptic tick. No screen shake.
+- Ice cracking, a lock opening, and a shutter lifting each get their own sound. A clear is a calm chime, stars, and a coin count, not a burst of particles.
 - Haptics use `navigator.vibrate` where it exists, and the hidden-switch tick on iPhone (same idea as the sibling games).
 - Sound is synthesized in Web Audio. No music bed, so the timer stays easy to hear.
-- Reduce motion kills shake and idle motion.
+- Reduce motion skips squash and the few motes.
 - Win and fail are full screens: stars, coins, retry, next. Retry does not ask for anything.
 
 ## Progression

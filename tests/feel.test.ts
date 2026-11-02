@@ -1,22 +1,30 @@
 import { describe, expect, it } from 'vitest';
-import { feedback, SHAKE_CAP } from '../src/sim/feel';
+import { feedback } from '../src/sim/feel';
+
+const EVENTS = ['grab', 'tick', 'bump', 'exit', 'thaw', 'unlock', 'room', 'rocket', 'ufo', 'clock', 'win', 'fail', 'ui'];
 
 describe('feedback mapping', () => {
-  it('makes an exit a bigger moment than a bump, and caps the shake', () => {
-    const exit = feedback('exit', false);
-    const bump = feedback('bump', false);
-    expect(exit.shake).toBeGreaterThan(bump.shake);
-    expect(exit.particles).toBeGreaterThan(8);
-    expect(exit.shake).toBeLessThanOrEqual(SHAKE_CAP);
-    expect(feedback('win', false).shake).toBeGreaterThan(exit.shake);
-    expect(feedback('win', false).shake).toBeLessThanOrEqual(SHAKE_CAP);
+  it('never shakes the screen', () => {
+    for (const event of EVENTS) {
+      expect(feedback(event, false).shake, event).toBe(0);
+      expect(feedback(event, true).shake, event).toBe(0);
+    }
   });
 
-  it('drops shake and squash when reduce motion is on', () => {
+  it('keeps an exit quieter than a burst, and a win free of particles', () => {
+    const exit = feedback('exit', false);
+    const bump = feedback('bump', false);
+    expect(exit.squash).toBeGreaterThan(bump.squash);
+    expect(exit.particles).toBeLessThanOrEqual(6);
+    expect(feedback('win', false).particles).toBe(0);
+    expect(feedback('fail', false).particles).toBe(0);
+  });
+
+  it('drops squash and particles when reduce motion is on', () => {
     for (const event of ['exit', 'win', 'bump', 'room', 'rocket']) {
       const feel = feedback(event, true);
-      expect(feel.shake).toBe(0);
       expect(feel.squash).toBe(0);
+      expect(feel.particles).toBe(0);
     }
   });
 });

@@ -32,13 +32,14 @@ export interface Floater {
 
 export interface Frame {
   level: Level;
-  pieces: { x: number; y: number; out: boolean; lift: number }[];
+  pieces: { x: number; y: number; out: boolean; lift: number; flash?: number; squash?: number }[];
   clears: number;
   keys: number;
   shake: number;
   particles: Particle[];
   texts: Floater[];
   dragId: number;
+  hoverId: number;
   symbols: boolean;
   reduce: boolean;
   time: number;
@@ -78,10 +79,7 @@ export function render(ctx: CanvasRenderingContext2D, g: Geom, frame: Frame) {
   ctx.fillStyle = bg;
   ctx.fillRect(0, 0, viewW, viewH);
 
-  const sx = frame.reduce ? 0 : Math.sin(frame.time * 47) * frame.shake;
-  const sy = frame.reduce ? 0 : Math.cos(frame.time * 53) * frame.shake * 0.8;
   ctx.save();
-  ctx.translate(sx, sy);
 
   const pad = Math.round(cell * 0.22);
   round(ctx, ox - pad, oy - pad, cell * level.w + pad * 2, cell * level.h + pad * 2, 18);
@@ -181,33 +179,103 @@ function drawPiece(ctx: CanvasRenderingContext2D, g: Geom, frame: Frame, i: numb
   const live = frame.pieces[i];
   const shape = SHAPES[p.shape];
   const col = paintColor(frame.level, p.color);
-  const lift = live.lift + (frame.dragId === i ? 5 : 0);
+  const hot = frame.dragId === i || frame.hoverId === i;
+  const lift = live.lift + (hot ? 7 : 0);
+  const squash = live.squash ?? 0;
+  const set = new Set(shape.cells.map(([x, y]) => `${x},${y}`));
+  const has = (x: number, y: number) => set.has(`${x},${y}`);
+  const cx = ox + (live.x + shape.w / 2) * cell;
+  const cy = oy + (live.y + shape.h / 2) * cell;
   ctx.save();
-  ctx.translate(0, -lift);
-  if (frame.dragId === i) ctx.shadowColor = 'rgba(0,0,0,.35)';
-  if (frame.dragId === i) ctx.shadowBlur = 16;
-  if (frame.dragId === i) ctx.shadowOffsetY = 8;
-  for (const [dx, dy] of shape.cells) {
-    const x = ox + (live.x + dx) * cell;
-    const y = oy + (live.y + dy) * cell;
-    brick(ctx, x, y, cell, col.hex, col.deep);
-  }
+  ctx.translate(cx, cy - lift);
+  ctx.scale(1 + squash * 0.15, 1 - squash * 0.45);
+  ctx.translate(-cx, -cy);
+  ctx.shadowColor = 'rgba(40, 16, 6, 0.38)';
+  ctx.shadowBlur = hot ? 16 : 7;
+  ctx.shadowOffsetY = hot ? 9 : 4;
+  fillPiece(ctx, ox, oy, cell, live.x, live.y, shape.cells, has, col.deep, 2.4);
   ctx.shadowColor = 'transparent';
-  const cx = ox + (live.x + (shape.w - 1) / 2) * cell + cell / 2;
-  const cy = oy + (live.y + (shape.h - 1) / 2) * cell + cell / 2;
+  fillPiece(ctx, ox, oy, cell, live.x, live.y, shape.cells, has, hot ? mix(col.hex, '#ffffff', 0.18) : col.hex, 0);
+  ctx.save();
+  ctx.beginPath();
+  tracePiece(ctx, ox, oy, cell, live.x, live.y, shape.cells, has, 0);
+  ctx.clip();
+  const top = oy + live.y * cell;
+  const grad = ctx.createLinearGradient(0, top, 0, top + shape.h * cell);
+  grad.addColorStop(0, 'rgba(255,255,255,.42)');
+  grad.addColorStop(0.42, 'rgba(255,255,255,0)');
+  grad.addColorStop(1, 'rgba(0,0,0,.12)');
+  ctx.fillStyle = grad;
+  ctx.fillRect(ox + live.x * cell, top, shape.w * cell, shape.h * cell);
+  if ((live.flash ?? 0) > 0) {
+    ctx.fillStyle = `rgba(255,255,255,${0.45 * (live.flash ?? 0)})`;
+    ctx.fillRect(ox + live.x * cell, top, shape.w * cell, shape.h * cell);
+  }
+  ctx.restore();
+  for (const [dx, dy] of shape.cells) {
+    stud(ctx, ox + (live.x + dx + 0.5) * cell, oy + (live.y + dy + 0.42) * cell, cell * 0.16, col.hex, col.deep);
+  }
+  const mx = ox + (live.x + (shape.w - 1) / 2) * cell + cell / 2;
+  const my = oy + (live.y + (shape.h - 1) / 2) * cell + cell / 2;
   const frozen = frame.clears < p.ice;
   const locked = frame.keys < p.lock;
   if (frame.symbols && !frozen) {
-    ctx.fillStyle = p.color % 2 === 1 && frame.level.variant === 'checker' ? '#fff' : 'rgba(0,0,0,.45)';
-    ctx.font = `700 ${Math.max(12, cell * 0.38)}px Fredoka, sans-serif`;
+    ctx.fillStyle = frame.level.variant === 'checker' && p.color % 2 === 1 ? '#fff' : 'rgba(0,0,0,.5)';
+    ctx.font = `700 ${Math.max(12, cell * 0.34)}px Fredoka, sans-serif`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.fillText(col.symbol, cx, cy + cell * 0.22);
+    ctx.fillText(col.symbol, mx, my + cell * 0.16);
   }
-  if (p.keys > 0) keyGlyph(ctx, cx + cell * 0.28, cy - cell * 0.28, cell * 0.22);
-  if (frozen) badge(ctx, cx, cy, String(p.ice - frame.clears), '#e7f7ff', '#1b4c5c');
-  else if (locked) badge(ctx, cx, cy, String(p.lock - frame.keys), '#ffe7a3', '#6a4a00');
+  if (p.keys > 0) keyGlyph(ctx, mx + cell * 0.28, my - cell * 0.28, cell * 0.2);
+  if (frozen) badge(ctx, mx, my, String(p.ice - frame.clears), '#e7f7ff', '#1b4c5c');
+  else if (locked) badge(ctx, mx, my, String(p.lock - frame.keys), '#ffe7a3', '#6a4a00');
   ctx.restore();
+}
+
+function fillPiece(
+  ctx: CanvasRenderingContext2D,
+  ox: number,
+  oy: number,
+  cell: number,
+  ax: number,
+  ay: number,
+  cells: readonly (readonly [number, number])[],
+  has: (x: number, y: number) => boolean,
+  color: string,
+  grow: number,
+) {
+  ctx.beginPath();
+  tracePiece(ctx, ox, oy, cell, ax, ay, cells, has, grow);
+  ctx.fillStyle = color;
+  ctx.fill();
+}
+
+/** One rounded silhouette for the whole piece, with a gap only on the outside. */
+function tracePiece(
+  ctx: CanvasRenderingContext2D,
+  ox: number,
+  oy: number,
+  cell: number,
+  ax: number,
+  ay: number,
+  cells: readonly (readonly [number, number])[],
+  has: (x: number, y: number) => boolean,
+  grow: number,
+) {
+  const gap = Math.max(3, cell * 0.11) - grow;
+  const radius = Math.max(4, cell * 0.2);
+  const bleed = 0.75;
+  for (const [dx, dy] of cells) {
+    let x = ox + (ax + dx) * cell + gap;
+    let y = oy + (ay + dy) * cell + gap;
+    let w = cell - gap * 2;
+    let h = cell - gap * 2;
+    if (has(dx - 1, dy)) { x -= gap + bleed; w += gap + bleed; }
+    if (has(dx + 1, dy)) w += gap + bleed;
+    if (has(dx, dy - 1)) { y -= gap + bleed; h += gap + bleed; }
+    if (has(dx, dy + 1)) h += gap + bleed;
+    addRound(ctx, x, y, w, h, radius);
+  }
 }
 
 function drawShutter(ctx: CanvasRenderingContext2D, g: Geom, x: number, y: number, w: number, h: number, left: number) {
@@ -243,32 +311,31 @@ function drawShutter(ctx: CanvasRenderingContext2D, g: Geom, x: number, y: numbe
   ctx.fill();
 }
 
-function brick(ctx: CanvasRenderingContext2D, x: number, y: number, cell: number, hex: string, deep: string) {
-  const m = Math.max(2, cell * 0.08);
-  round(ctx, x + m, y + m + 2, cell - m * 2, cell - m * 2, cell * 0.18);
-  ctx.fillStyle = deep;
-  ctx.fill();
-  round(ctx, x + m, y + m, cell - m * 2, cell - m * 2, cell * 0.18);
-  ctx.fillStyle = hex;
-  ctx.fill();
-  ctx.fillStyle = 'rgba(255,255,255,.38)';
-  round(ctx, x + m + 3, y + m + 3, cell - m * 2 - 8, (cell - m * 2) * 0.28, 4);
-  ctx.fill();
-  const cx = x + cell / 2;
-  const cy = y + cell / 2 - cell * 0.06;
-  const r = cell * 0.16;
+function stud(ctx: CanvasRenderingContext2D, x: number, y: number, r: number, hex: string, deep: string) {
   ctx.beginPath();
   ctx.fillStyle = deep;
-  ctx.arc(cx, cy + 1.5, r, 0, Math.PI * 2);
+  ctx.arc(x, y + 1.4, r, 0, Math.PI * 2);
   ctx.fill();
   ctx.beginPath();
   ctx.fillStyle = hex;
-  ctx.arc(cx, cy, r, 0, Math.PI * 2);
+  ctx.arc(x, y, r, 0, Math.PI * 2);
   ctx.fill();
   ctx.beginPath();
-  ctx.fillStyle = 'rgba(255,255,255,.7)';
-  ctx.arc(cx - r * 0.28, cy - r * 0.32, r * 0.32, 0, Math.PI * 2);
+  ctx.fillStyle = 'rgba(255,255,255,.75)';
+  ctx.arc(x - r * 0.28, y - r * 0.32, r * 0.32, 0, Math.PI * 2);
   ctx.fill();
+}
+
+function mix(hex: string, withHex: string, t: number): string {
+  const a = hexToRgb(hex);
+  const b = hexToRgb(withHex);
+  const c = a.map((v, i) => Math.round(v + (b[i] - v) * t));
+  return `rgb(${c[0]}, ${c[1]}, ${c[2]})`;
+}
+
+function hexToRgb(hex: string): [number, number, number] {
+  const h = hex.replace('#', '');
+  return [parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16), parseInt(h.slice(4, 6), 16)];
 }
 
 function badge(ctx: CanvasRenderingContext2D, x: number, y: number, text: string, fill: string, ink: string) {
@@ -309,7 +376,7 @@ function keyGlyph(ctx: CanvasRenderingContext2D, x: number, y: number, s: number
 function chevron(ctx: CanvasRenderingContext2D, x: number, y: number, dir: Dir, s: number, color: string) {
   ctx.save();
   ctx.translate(x, y);
-  ctx.rotate(dir * Math.PI / 2);
+  ctx.rotate((dir - 1) * Math.PI / 2);
   ctx.strokeStyle = color;
   ctx.lineWidth = 2.4;
   ctx.lineCap = 'round';
@@ -322,8 +389,12 @@ function chevron(ctx: CanvasRenderingContext2D, x: number, y: number, dir: Dir, 
 }
 
 function round(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number) {
-  const radius = Math.min(r, w / 2, h / 2);
   ctx.beginPath();
+  addRound(ctx, x, y, w, h, r);
+}
+
+function addRound(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number) {
+  const radius = Math.max(0, Math.min(r, w / 2, h / 2));
   ctx.moveTo(x + radius, y);
   ctx.arcTo(x + w, y, x + w, y + h, radius);
   ctx.arcTo(x + w, y + h, x, y + h, radius);
@@ -361,7 +432,6 @@ export function stepFx(frame: Frame, dt: number) {
     t.y -= 18 * dt;
   }
   frame.texts = frame.texts.filter((t) => t.life > 0);
-  frame.shake *= Math.pow(0.04, dt);
-  if (frame.shake < 0.15) frame.shake = 0;
+  frame.shake = 0;
 }
 

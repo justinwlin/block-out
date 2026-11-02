@@ -24,6 +24,8 @@ interface Live {
   y: number;
   out: boolean;
   lift: number;
+  flash: number;
+  squash: number;
 }
 interface ExitAnim {
   i: number;
@@ -109,6 +111,7 @@ function freshFrame(level: Level, live: Live[]): Frame {
     particles: [] as Particle[],
     texts: [] as Floater[],
     dragId: -1,
+    hoverId: -1,
     symbols: save.settings.symbols,
     reduce: save.settings.reduceMotion,
     time: 0,
@@ -128,7 +131,7 @@ function startLevel(n: number, resume = false) {
     sim.clears = snap.out.reduce((a, b) => a + (b ? 1 : 0), 0);
     sim.keys = level.pieces.reduce((a, p, i) => a + (snap.out[i] ? p.keys : 0), 0);
   }
-  const live = level.pieces.map((_, i) => ({ x: sim.x[i], y: sim.y[i], out: !!sim.out[i], lift: 0 }));
+  const live = level.pieces.map((_, i) => ({ x: sim.x[i], y: sim.y[i], out: !!sim.out[i], lift: 0, flash: 0, squash: 0 }));
   session = {
     level,
     sim,
@@ -163,17 +166,10 @@ function syncLive(s: Session) {
   }
 }
 
-function juice(kind: string, x?: number, y?: number) {
+function juice(kind: string) {
   const feel = feedback(kind, save.settings.reduceMotion);
-  if (session) {
-    session.frame.shake = Math.min(14, session.frame.shake + feel.shake);
-    if (feel.particles && x !== undefined && y !== undefined) {
-      const color = '#fff';
-      burst(session.frame.particles, x, y, color, feel.particles);
-    }
-  }
   haptics.pulse(feel.haptic);
-  audio.play(kind as 'exit');
+  audio.play(kind as 'grab');
 }
 
 function pieceCenter(s: Session, i: number): { x: number; y: number } {
@@ -191,21 +187,18 @@ function noteChanges(s: Session, beforeClears: number, beforeKeys: number) {
     const p = level.pieces[i];
     if (p.ice > 0 && beforeClears < p.ice && sim.clears >= p.ice) {
       const c = pieceCenter(s, i);
-      juice('thaw', c.x, c.y);
-      s.frame.texts.push({ x: c.x, y: c.y, life: 0.8, text: 'Thaw', color: '#e7f7ff' });
+      juice('thaw');
+      burst(s.frame.particles, c.x, c.y, '#dff6ff', feedback('thaw', false).particles);
     }
-    if (p.lock > 0 && beforeKeys < p.lock && sim.keys >= p.lock) {
-      const c = pieceCenter(s, i);
-      juice('unlock', c.x, c.y);
-    }
+    if (p.lock > 0 && beforeKeys < p.lock && sim.keys >= p.lock) juice('unlock');
   }
   for (let r = 0; r < level.rooms.length; r++) {
     const room = level.rooms[r];
     if (beforeClears < room.openAfter && sim.clears >= room.openAfter) {
       const x = s.geom.ox + (room.x + room.w / 2) * s.geom.cell;
       const y = s.geom.oy + (room.y + room.h / 2) * s.geom.cell;
-      juice('room', x, y);
-      burst(s.frame.particles, x, y, '#ffd56a', 16);
+      juice('room');
+      burst(s.frame.particles, x, y, '#ffd56a', feedback('room', false).particles);
     }
   }
 }
@@ -219,8 +212,8 @@ function finishExit(s: Session, i: number) {
   s.live[i].out = true;
   s.frame.clears = s.sim.clears;
   s.frame.keys = s.sim.keys;
-  burst(s.frame.particles, c.x, c.y, col.hex, feedback('exit', false).particles);
-  juice('exit', c.x, c.y);
+  burst(s.frame.particles, c.x, c.y, col.hex, feedback('exit', save.settings.reduceMotion).particles);
+  juice('exit');
   noteChanges(s, beforeC, beforeK);
   s.exiting = null;
   if (won(s.level, s.sim)) onWin();
@@ -242,11 +235,14 @@ function slideBy(s: Session, i: number, dir: Dir, dist: number) {
   }
   const use = Math.min(dist, a.max);
   if (use < 1) {
+    s.live[i].flash = 1;
+    s.live[i].squash = 0.14;
     juice('bump');
     return;
   }
   applyMove(s.level, s.sim, { i, dir, dist: use, exit: false });
   syncLive(s);
+  s.live[i].squash = 0.05;
   audio.play('tick');
   haptics.pulse(8);
 }
@@ -324,16 +320,15 @@ function fireAt(i: number) {
     const c = pieceCenter(s, i);
     destroyPiece(s.level, s.sim, i);
     s.live[i].out = true;
-    burst(s.frame.particles, c.x, c.y, col.hex, 18);
-    juice('rocket', c.x, c.y);
+    burst(s.frame.particles, c.x, c.y, col.hex, feedback('rocket', false).particles);
+    juice('rocket');
   } else {
     const color = s.level.pieces[i].color;
     for (let k = 0; k < s.level.pieces.length; k++) {
       if (s.level.pieces[k].color !== color || !pieceActive(s.level, s.sim, k)) continue;
-      const c = pieceCenter(s, k);
-      burst(s.frame.particles, c.x, c.y, col.hex, 8);
       s.live[k].out = true;
     }
+    burst(s.frame.particles, pieceCenter(s, i).x, pieceCenter(s, i).y, col.hex, feedback('ufo', false).particles);
     destroyColor(s.level, s.sim, color);
     juice('ufo');
   }
@@ -357,7 +352,8 @@ function onPointerDown(ev: PointerEvent) {
   }
   if (!canMove(s.level, s.sim, i)) {
     juice('bump');
-    s.live[i].lift = 2;
+    s.live[i].flash = 1;
+    s.live[i].squash = 0.14;
     return;
   }
   s.drag = { i, pid: ev.pointerId, sx: p.x, sy: p.y, axis: null, off: 0 };
@@ -368,8 +364,16 @@ function onPointerDown(ev: PointerEvent) {
 
 function onPointerMove(ev: PointerEvent) {
   const s = session;
-  if (!s?.drag || s.drag.pid !== ev.pointerId || s.exiting) return;
+  if (!s || mode !== 'play') return;
   const p = localPoint(ev);
+  if (!s.drag) {
+    const hit = hitPiece(s, p.x, p.y);
+    s.frame.hoverId = hit;
+    canvas.style.cursor = hit >= 0 ? 'grab' : 'default';
+    return;
+  }
+  if (s.drag.pid !== ev.pointerId || s.exiting) return;
+  s.frame.hoverId = s.drag.i;
   const dx = p.x - s.drag.sx;
   const dy = p.y - s.drag.sy;
   if (!s.drag.axis && Math.hypot(dx, dy) > 8) s.drag.axis = Math.abs(dx) > Math.abs(dy) ? 'h' : 'v';
@@ -506,22 +510,39 @@ function el(html: string): HTMLElement {
 }
 
 function titleScreen() {
-  const node = el(`<div class="screen solid"><div class="card">
-    <h1>Block<br>Out</h1>
-    <p class="sub">Slide every brick out through its gate.</p>
-    <div class="stack">
-      <button class="btn" data-go="play">${save.snapshot ? 'Continue' : 'Play'}</button>
-      <button class="btn ghost" data-go="levels">Levels</button>
-      <button class="btn ghost" data-go="help">How to play</button>
-      <button class="btn ghost" data-go="settings">Settings</button>
+  const n = save.snapshot?.n ?? save.unlocked;
+  const path = [n - 2, n - 1, n, n + 1, n + 2].filter((i) => i >= 1).map((i) => {
+    const openLevel = i <= save.unlocked;
+    return `<button class="node${i === n ? ' now' : ''}" data-n="${i}" ${openLevel ? '' : 'disabled'}>${i}</button>`;
+  }).join('<span class="path-line"></span>');
+  const node = el(`<div class="screen solid home">
+    <div class="home-top">
+      <div class="coin-pill">${save.coins}</div>
+      <button class="icon gear" data-go="settings" aria-label="Settings">⚙</button>
     </div>
-    <p class="meta">● ${save.coins} · level ${save.unlocked}</p>
-  </div></div>`);
+    <div class="home-hero">
+      <div class="mark" aria-hidden="true"></div>
+      <h1 class="wordmark">Block Out</h1>
+      <p class="sub">Slide every brick through its gate.</p>
+    </div>
+    <div class="path">${path}</div>
+    <button class="btn play" data-go="play">${save.snapshot ? 'Continue' : 'Play'}<em>Level ${n}</em></button>
+    <div class="home-links">
+      <button data-go="levels">All levels</button>
+      <button data-go="help">How to play</button>
+    </div>
+  </div>`);
   node.querySelector('[data-go="play"]')!.addEventListener('click', () => {
     audio.unlock();
     audio.play('ui');
     if (save.snapshot) startLevel(save.snapshot.n, true);
     else startLevel(save.unlocked);
+  });
+  node.querySelectorAll<HTMLButtonElement>('.node').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const level = Number(btn.dataset.n);
+      if (level <= save.unlocked) startLevel(level);
+    });
   });
   node.querySelector('[data-go="levels"]')!.addEventListener('click', () => { chapter = Math.floor((save.unlocked - 1) / 20); open('levels'); });
   node.querySelector('[data-go="help"]')!.addEventListener('click', () => open('help'));
@@ -538,8 +559,8 @@ function levelScreen() {
     const starsTxt = best ? '★'.repeat(best.stars) + '☆'.repeat(3 - best.stars) : '';
     return `<button class="lvl" data-n="${n}" ${openLevel ? '' : 'disabled'}>${n}<small>${starsTxt}</small></button>`;
   }).join('');
-  const node = el(`<div class="screen solid"><div class="card">
-    <h1 style="font-size:36px">Levels</h1>
+  const node = el(`<div class="screen solid"><div class="card panel">
+    <h1 class="sheet-title">Levels</h1>
     <div class="grid">${buttons}</div>
     <div class="row">
       <button class="btn ghost" data-go="prev" ${chapter === 0 ? 'disabled' : ''}>Back</button>
@@ -560,8 +581,8 @@ function levelScreen() {
 }
 
 function helpScreen() {
-  const node = el(`<div class="screen solid"><div class="card">
-    <h1 style="font-size:36px">How to play</h1>
+  const node = el(`<div class="screen solid"><div class="card panel">
+    <h1 class="sheet-title">How to play</h1>
     <div class="help">
       <p><b>Drag</b> a brick along a row or a column. It stops when it hits something.</p>
       <p>Line it up with a <b>gate of its color</b> that it fits, and drag it out.</p>
@@ -596,8 +617,8 @@ function bindSettings(root: ParentNode) {
 }
 
 function settingsScreen() {
-  const node = el(`<div class="screen solid"><div class="card" style="text-align:left">
-    <h1 style="font-size:36px;text-align:center">Settings</h1>
+  const node = el(`<div class="screen solid"><div class="card panel" style="text-align:left">
+    <h1 class="sheet-title">Settings</h1>
     ${settingRow('timer', 'Timer')}
     <p class="note">Off: no countdown, no time-out, and no freeze booster. The tray can still be cleared.</p>
     ${settingRow('sound', 'Sound')}
@@ -612,8 +633,8 @@ function settingsScreen() {
 }
 
 function pauseScreen() {
-  const node = el(`<div class="screen"><div class="card">
-    <h1 style="font-size:40px">Paused</h1>
+  const node = el(`<div class="screen"><div class="card panel">
+    <h1 class="sheet-title">Paused</h1>
     ${settingRow('timer', 'Timer')}
     <p class="note">Turn this off to drop the clock for the rest of your puzzles.</p>
     <div class="stack">
@@ -637,19 +658,35 @@ function resultScreen(win: boolean) {
   const s = session!;
   const star = win ? stars(s.level.timer, s.timeLeft, s.boosters, !save.settings.timer) : 0;
   const gained = win ? s.gained : 0;
-  const node = el(`<div class="screen"><div class="card">
-    <h1 style="font-size:42px">${win ? 'Clear' : "Time's up"}</h1>
-    <p class="sub">${win ? `${'★'.repeat(star)}${'☆'.repeat(3 - star)} · +${gained} coins` : 'The tray is still full.'}</p>
+  const starHtml = [0, 1, 2].map((i) => `<span class="star${i < star ? ' on' : ''}" style="animation-delay:${0.18 + i * 0.18}s">★</span>`).join('');
+  const node = el(`<div class="screen ${win ? 'win' : 'fail'}"><div class="card panel">
+    <p class="eyebrow">Level ${s.level.n}</p>
+    <h1 class="sheet-title">${win ? 'Clear' : "Time's up"}</h1>
+    ${win ? `<div class="stars" aria-label="${star} stars">${starHtml}</div><p class="gain" id="gain">+0</p><p class="purse">Balance <b id="purse">${save.coins - gained}</b></p>` : '<p class="sub">The tray is still full. Take another run.</p>'}
     <div class="stack">
-      ${win ? `<button class="btn gold" data-go="next">Level ${s.level.n + 1}</button>` : ''}
-      <button class="btn" data-go="retry">Retry</button>
+      ${win ? `<button class="btn gold next" data-go="next">Next · Level ${s.level.n + 1}</button>` : ''}
+      <button class="btn${win ? ' ghost' : ''}" data-go="retry">Retry</button>
       <button class="btn ghost" data-go="levels">Levels</button>
     </div>
   </div></div>`);
+  if (win) tickGain(node.querySelector('#gain')!, node.querySelector('#purse')!, save.coins - gained, gained);
   node.querySelector('[data-go="next"]')?.addEventListener('click', () => startLevel(s.level.n + 1));
   node.querySelector('[data-go="retry"]')!.addEventListener('click', () => startLevel(s.level.n));
   node.querySelector('[data-go="levels"]')!.addEventListener('click', () => open('levels'));
   return node;
+}
+
+function tickGain(gain: HTMLElement, purse: HTMLElement, start: number, amount: number) {
+  const t0 = performance.now();
+  const step = (now: number) => {
+    const k = Math.min(1, (now - t0) / 720);
+    const eased = 1 - (1 - k) ** 3;
+    const shown = Math.round(amount * eased);
+    gain.textContent = `+${shown}`;
+    purse.textContent = String(start + shown);
+    if (k < 1) requestAnimationFrame(step);
+  };
+  requestAnimationFrame(step);
 }
 
 function open(next: Mode, back?: Mode) {
@@ -702,16 +739,20 @@ function loop(now: number) {
     if (s.hintFor <= 0) hintEl.classList.add('hidden');
     s.live.forEach((live, i) => {
       if (live.lift > 0 && s.drag?.i !== i) live.lift = Math.max(0, live.lift - dt * 30);
+      live.flash = Math.max(0, live.flash - dt * 2.4);
+      live.squash *= Math.exp(-dt * 7);
+      if (live.squash < 0.004) live.squash = 0;
     });
     const clock = tickClock(s.timeLeft, s.freeze, dt, save.settings.timer);
     s.timeLeft = clock.timeLeft;
     s.freeze = clock.freeze;
     if (s.exiting) {
-      s.exiting.t += dt / 0.28;
+      s.exiting.t += dt / 0.38;
       const k = Math.min(1, s.exiting.t);
-      const ease = k * k;
-      s.live[s.exiting.i].x = s.exiting.x + DX[s.exiting.dir] * ease * 1.15;
-      s.live[s.exiting.i].y = s.exiting.y + DY[s.exiting.dir] * ease * 1.15;
+      const ease = 1 - (1 - k) ** 3;
+      s.live[s.exiting.i].x = s.exiting.x + DX[s.exiting.dir] * ease * 0.7;
+      s.live[s.exiting.i].y = s.exiting.y + DY[s.exiting.dir] * ease * 0.7;
+      s.live[s.exiting.i].squash = (1 - k) * 0.08;
       if (k >= 1 && s.exiting) finishExit(s, s.exiting.i);
     }
     if (clock.failed && !s.over) onFail();
@@ -748,4 +789,19 @@ window.__blockout = {
   session: () => session,
   save: () => save,
   geom: () => session?.geom ?? null,
+  /** Test hook: clear the open tray and show the win screen. */
+  clear: () => {
+    const s = session;
+    if (!s || s.over) return;
+    for (let i = 0; i < s.level.pieces.length; i++) {
+      if (s.sim.out[i]) continue;
+      s.sim.out[i] = 1;
+      s.sim.clears += 1;
+      s.sim.keys += s.level.pieces[i].keys;
+      s.live[i].out = true;
+    }
+    s.frame.clears = s.sim.clears;
+    s.frame.keys = s.sim.keys;
+    onWin();
+  },
 };
