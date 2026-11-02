@@ -141,6 +141,7 @@ function freshFrame(level: Level, live: Live[], sim: SimState): Frame {
     particles: [] as Particle[],
     texts: [] as Floater[],
     dragId: -1,
+    flights: [],
     exitId: -1,
     hoverId: -1,
     symbols: save.settings.symbols,
@@ -234,6 +235,15 @@ function finishExit(s: Session, i: number) {
   const col = paintColor(s.level, s.sim.color[i]);
   // The brick sits on its last on-tray cell; one step in the exit direction crosses the gate.
   applyMove(s.level, s.sim, { i, dir: s.exiting?.dir ?? 0, dist: 1, exit: true });
+  // A key brick sends its key to every padlock still waiting, so the link is visible.
+  if (s.level.pieces[i].keys > 0) {
+    for (let k = 0; k < s.level.pieces.length; k++) {
+      const q = s.level.pieces[k];
+      if (q.lock <= 0 || s.sim.out[k] || beforeK >= q.lock) continue;
+      const to = pieceCenter(s, k);
+      s.frame.flights.push({ x0: c.x, y0: c.y, x1: to.x, y1: to.y, t: 0, });
+    }
+  }
   s.live[i].out = true;
   s.frame.clears = s.sim.clears;
   s.frame.keys = s.sim.keys;
@@ -688,10 +698,12 @@ function helpScreen() {
   const node = el(`<div class="screen solid"><div class="card panel">
     <h1 class="sheet-title">How to play</h1>
     <div class="help">
-      <p><b>Drag</b> a brick along a row or a column. It stops when it hits something.</p>
+      <p><b>Drag</b> a brick along a row or column, around corners too. It stops when it hits something.</p>
       <p>Line it up with a <b>gate of its color</b> that it fits, and drag it out.</p>
-      <p><b>Ice</b> and <b>padlocks</b> wait until enough bricks (or keys) have left. A <b>shutter</b> lifts when its count hits zero and reveals more bricks.</p>
-      <p>Clear the tray before the clock runs out, or turn <b>Timer</b> off in Settings (it's on the pause screen too). Retry is always free.</p>
+      <p><b>Ice</b> (blue, with a snowflake) thaws after that many bricks have left. Frozen gates work the same way.</p>
+      <p>A brick with a <b>key</b> unlocks <b>padlocked</b> bricks when it leaves. The padlock shows how many keys it still needs.</p>
+      <p><b>Arrows</b> on a brick mean it only slides that way. <b>Dots</b> on a gate count how many more bricks it lets through. A brick that stops on a <b>paint</b> splash turns that color. A <b>shutter</b> lifts when its count reaches zero.</p>
+      <p>Clear the tray before the clock runs out, or turn <b>Timer</b> off in Settings. Retry is always free.</p>
     </div>
     <button class="btn" data-go="title">Back</button>
   </div></div>`);
@@ -877,6 +889,8 @@ function loop(now: number) {
       }
     }
     if (clock.failed && !s.over) onFail();
+    for (const f of s.frame.flights) f.t += dt / 0.7;
+    s.frame.flights = s.frame.flights.filter((f) => f.t < 1);
     stepFx(s.frame, dt);
     if (Math.floor(s.frame.time) !== Math.floor(s.frame.time - dt)) persistProgress();
   }

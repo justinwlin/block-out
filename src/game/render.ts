@@ -46,6 +46,8 @@ export interface Frame {
   /** Live brick colors (paint changes them) and gate pass counts, from the sim. */
   colors: ArrayLike<number>;
   passed: ArrayLike<number>;
+  /** Keys flying from a gate to the padlock they open. t runs 0 to 1. */
+  flights: { x0: number; y0: number; x1: number; y1: number; t: number }[];
   /** Brick currently sliding out through a gate, or -1. */
   exitId: number;
   hoverId: number;
@@ -181,6 +183,13 @@ export function render(ctx: CanvasRenderingContext2D, g: Geom, frame: Frame) {
     drawShutter(ctx, g, room.x, room.y, room.w, room.h, room.openAfter - frame.clears);
   }
 
+  for (const f of frame.flights) {
+    // Ease out along an arc so the key visibly travels from the gate to its padlock.
+    const k = 1 - (1 - Math.min(1, f.t)) ** 3;
+    const x = f.x0 + (f.x1 - f.x0) * k;
+    const y = f.y0 + (f.y1 - f.y0) * k - Math.sin(k * Math.PI) * cell * 1.2;
+    keyToken(ctx, x, y, cell * (0.22 + 0.08 * Math.sin(k * Math.PI)));
+  }
   for (const p of frame.particles) {
     // Hold full opacity, then fade over the last third of life.
     ctx.globalAlpha = Math.max(0, Math.min(1, (p.life / p.max) * 3));
@@ -223,8 +232,9 @@ function drawGate(ctx: CanvasRenderingContext2D, g: Geom, frame: Frame, gate: Le
   const uses = gate.uses ?? 0;
   const left = uses ? Math.max(0, uses - (frame.passed[gi] ?? 0)) : -1;
   const closed = left === 0;
-  const hex = closed ? '#5b6190' : iced ? '#d6eef7' : col.hex;
-  const deep = closed ? '#2c3062' : iced ? '#7fa9b9' : col.deep;
+  // Frozen is a saturated ice blue, so it never reads as a white gate.
+  const hex = closed ? '#5b6190' : iced ? '#5ab8f0' : col.hex;
+  const deep = closed ? '#2c3062' : iced ? '#1f5f9e' : col.deep;
   const r = Math.max(4, Math.min(w, h) * 0.28);
   const d = Math.max(2, cell * 0.05);
   round(ctx, x, y, w, h, r);
@@ -245,14 +255,34 @@ function drawGate(ctx: CanvasRenderingContext2D, g: Geom, frame: Frame, gate: Le
   const s = Math.min(w, h);
   if (iced) {
     const left = gate.ice - frame.clears;
-    ctx.font = `700 ${Math.max(12, s * 0.62)}px Fredoka, sans-serif`;
+    // Frost streaks across the gate face.
+    ctx.save();
+    round(ctx, x, y, w, h - d, r);
+    ctx.clip();
+    ctx.strokeStyle = 'rgba(255,255,255,.45)';
+    ctx.lineWidth = Math.max(1.5, s * 0.06);
+    for (let t = -h; t < w + h; t += s * 0.55) {
+      ctx.beginPath();
+      ctx.moveTo(x + t, y + h);
+      ctx.lineTo(x + t + h, y);
+      ctx.stroke();
+    }
+    ctx.restore();
+    const gx = x + w / 2;
+    const gy = y + (h - d) / 2;
+    const along = w >= h;
+    const fs = Math.max(12, s * 0.6);
+    snowflake(ctx, along ? gx - fs * 0.6 : gx, along ? gy : gy - fs * 0.6, fs * 0.36, '#ffffff');
+    ctx.font = `700 ${fs}px Fredoka, sans-serif`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.lineWidth = 3;
-    ctx.strokeStyle = '#ffffff';
-    ctx.strokeText(String(left), x + w / 2, y + (h - d) / 2 + 1);
-    ctx.fillStyle = '#7a5a3a';
-    ctx.fillText(String(left), x + w / 2, y + (h - d) / 2 + 1);
+    ctx.strokeStyle = '#1f5f9e';
+    const tx = along ? gx + fs * 0.45 : gx;
+    const ty = along ? gy + 1 : gy + fs * 0.5;
+    ctx.strokeText(String(left), tx, ty);
+    ctx.fillStyle = '#ffffff';
+    ctx.fillText(String(left), tx, ty);
     return;
   }
   // One arrow, centered: the gate reads as a door, not a pattern.
@@ -461,7 +491,7 @@ function drawPiece(ctx: CanvasRenderingContext2D, g: Geom, frame: Frame, i: numb
   if (frozen) iceOverlay(ctx, ox, oy, cell, live.x, live.y, shape.cells, has);
   // Under any count badge; the arrow tips stay visible past the badge's edge.
   if (p.axis) axisArrows(ctx, mx, my, cell, p.axis, col.deep);
-  if (frozen) badge(ctx, mx, my, String(p.ice - frame.clears), '#e7f7ff', '#1b4c5c', cell);
+  if (frozen) iceBadge(ctx, mx, my, cell, p.ice - frame.clears);
   else if (locked) padlock(ctx, mx, my, cell, p.lock - frame.keys);
   // Key bricks carry a key token; it moves to a corner if a count badge is already in the middle.
   if (p.keys > 0) {
@@ -497,22 +527,66 @@ function iceOverlay(
   ctx.save();
   ctx.beginPath();
   tracePiece(ctx, ox, oy, cell, ax, ay, cells, has, 0);
-  ctx.fillStyle = 'rgba(214, 240, 255, 0.55)';
+  // A clear blue ice block over the brick: tinted and frosted.
+  ctx.fillStyle = 'rgba(70, 165, 235, 0.55)';
   ctx.fill();
   ctx.clip();
-  ctx.strokeStyle = 'rgba(255,255,255,.7)';
-  ctx.lineWidth = 2;
+  ctx.strokeStyle = 'rgba(255,255,255,.75)';
+  ctx.lineWidth = Math.max(1.5, cell * 0.03);
   for (const [dx, dy] of cells) {
     const x = ox + (ax + dx) * cell;
     const y = oy + (ay + dy) * cell;
     ctx.beginPath();
-    ctx.moveTo(x + cell * 0.18, y + cell * 0.7);
-    ctx.lineTo(x + cell * 0.42, y + cell * 0.3);
-    ctx.moveTo(x + cell * 0.55, y + cell * 0.82);
-    ctx.lineTo(x + cell * 0.8, y + cell * 0.45);
+    ctx.moveTo(x + cell * 0.12, y + cell * 0.62);
+    ctx.lineTo(x + cell * 0.38, y + cell * 0.18);
+    ctx.moveTo(x + cell * 0.58, y + cell * 0.9);
+    ctx.lineTo(x + cell * 0.86, y + cell * 0.42);
     ctx.stroke();
   }
   ctx.restore();
+}
+
+/** Six-armed snowflake with little side ticks. */
+function snowflake(ctx: CanvasRenderingContext2D, x: number, y: number, r: number, color: string) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.strokeStyle = color;
+  ctx.lineCap = 'round';
+  ctx.lineWidth = Math.max(1.4, r * 0.22);
+  for (let k = 0; k < 6; k++) {
+    ctx.rotate(Math.PI / 3);
+    ctx.beginPath();
+    ctx.moveTo(0, 0);
+    ctx.lineTo(0, -r);
+    ctx.moveTo(0, -r * 0.55);
+    ctx.lineTo(-r * 0.25, -r * 0.78);
+    ctx.moveTo(0, -r * 0.55);
+    ctx.lineTo(r * 0.25, -r * 0.78);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+/** Ice count: dark blue disc, white number, a small snowflake on its rim. */
+function iceBadge(ctx: CanvasRenderingContext2D, x: number, y: number, cell: number, left: number) {
+  const r = Math.max(12, cell * 0.25);
+  ctx.beginPath();
+  ctx.arc(x, y, r, 0, Math.PI * 2);
+  ctx.fillStyle = '#1f5f9e';
+  ctx.fill();
+  ctx.lineWidth = Math.max(2, r * 0.14);
+  ctx.strokeStyle = '#c8f0ff';
+  ctx.stroke();
+  ctx.fillStyle = '#ffffff';
+  ctx.font = `700 ${Math.round(r * 1.1)}px Fredoka, sans-serif`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(String(left), x, y + 1);
+  ctx.beginPath();
+  ctx.arc(x + r * 0.78, y - r * 0.78, r * 0.42, 0, Math.PI * 2);
+  ctx.fillStyle = '#1f5f9e';
+  ctx.fill();
+  snowflake(ctx, x + r * 0.78, y - r * 0.78, r * 0.32, '#ffffff');
 }
 
 function fillPiece(

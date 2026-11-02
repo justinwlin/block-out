@@ -315,7 +315,7 @@ function present(level: Level, params: Params, label: Label): { hint: string; me
   else if (mechanics.includes('one-way')) hint = 'Bricks with arrows only slide the way the arrows point.';
   else if (level.variant === 'chambers') hint = 'Two rooms. Clear the top one and the shutter lifts on the bottom.';
   else if (level.rooms.length) hint = 'The crowned shutter opens when its count hits zero, and more bricks come with it.';
-  else if (mechanics.includes('lock')) hint = 'A padlock stays put until enough key bricks have left.';
+  else if (mechanics.includes('lock')) hint = 'Bricks with a key unlock padlocked bricks when they leave. The padlock shows how many keys it still needs.';
   else if (mechanics.includes('ice-gate')) hint = 'Frost on a gate melts as other bricks leave.';
   else if (mechanics.includes('ice')) hint = 'Frozen bricks thaw after enough bricks leave.';
   else if (level.variant === 'checker') hint = 'Ink out the black gate, paper out the white one. Order is the whole puzzle.';
